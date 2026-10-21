@@ -3,7 +3,7 @@
 - 객관식: KMMLU(일부), HAE-RAE(전체), MMLU(일부, 영어 능력 확인용)
 - 퍼플렉시티: 한국어/영어 위키 (보정에 안 쓴 파일)
 - 생성 예시: configs/gen_prompts.txt
-필요 GPU: L4 (전문가 32개 원본 MXFP4 약 13GB도 들어감)
+필요 GPU: L4 (ERNIE 원본 Q6_K 약 18GB까지 들어감)
 출력: results/eval/{name}.json
 """
 
@@ -13,9 +13,10 @@ import time
 from pathlib import Path
 
 from _common import RESULTS, ROOT, load_config
-from transformers import AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 
 from cfinetune import data, llama
+from cfinetune.arch import arch_of
 
 
 def cached(path: Path, make):
@@ -43,6 +44,7 @@ def main():
     cfg = load_config(args.config)
     e = cfg["eval"]
     tok = AutoTokenizer.from_pretrained(args.tokenizer or cfg["model"]["id"])
+    arch = arch_of(AutoConfig.from_pretrained(args.tokenizer or cfg["model"]["id"]))
     items = cached(RESULTS / "cache" / f"eval_items-s{e['seed']}.json", lambda: data.load_eval_items(cfg))
     if args.limit:
         items = items[::max(1, len(items) // args.limit)][:args.limit]
@@ -51,13 +53,13 @@ def main():
 
     t0 = time.time()
     with llama.LlamaServer(args.bin_dir, args.gguf, ngl=args.ngl, log=RESULTS / "cache" / f"server-{args.name}.log") as srv:
-        res = llama.score_mcq(srv, tok, items, e["prompt_format"],
+        res = llama.score_mcq(srv, tok, arch, items, e["prompt_format"],
                               progress=lambda i, n: print(f"  객관식 {i}/{n}", flush=True))
         out["mcq"] = llama.summarize_mcq(res)
         out["mcq_items"] = res
         if not args.skip_gen:
             prompts = [l.strip() for l in (ROOT / "configs" / "gen_prompts.txt").read_text(encoding="utf-8").splitlines() if l.strip()]
-            out["generations"] = [{"prompt": p, "output": o} for p, o in zip(prompts, llama.generate(srv, tok, prompts))]
+            out["generations"] = [{"prompt": p, "output": o} for p, o in zip(prompts, llama.generate(srv, tok, arch, prompts))]
     out["mcq_seconds"] = round(time.time() - t0, 1)
     print(json.dumps(out["mcq"], ensure_ascii=False, indent=1))
 

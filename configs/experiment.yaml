@@ -1,54 +1,61 @@
 # 실험 설정 한 곳에 모아두기 (탐구 보고서의 "통제 변인"이 여기 다 있음)
+# 목표: 한국어를 못하는 MoE 모델을 칼질(전문가 프루닝)하고, 양자화하고, 한국어로 추가학습해서
+#       "더 작은데 한국어는 원본보다 잘하는" 모델을 만든다.
 
 model:
-  id: openai/gpt-oss-20b          # 원본 MXFP4 체크포인트 (약 13GB)
-  num_experts: 32
-  top_k: 4                        # 남길 전문가 수는 반드시 top_k 이상
+  id: baidu/ERNIE-4.5-21B-A3B-PT  # 영어·중국어 모델 (한국어 공식 미지원), BF16 약 44GB
+  num_experts: 64
+  top_k: 6                        # 남길 전문가 수는 반드시 top_k 이상
 
-calibration:                      # 01_calibrate.py
+calibration:                      # 01_calibrate.py : 무엇을 남길지 정하는 데이터 (전부 한국어)
   seq_len: 512
   n_chunks: 512                   # 512 x 512 = 약 26만 토큰
   batch_size: 8
-  sources:
-    ko: {dataset: wikimedia/wikipedia, file: 20231101.ko/train-00000-of-00003.parquet}
-    en: {dataset: wikimedia/wikipedia, file: 20231101.en/train-00000-of-00041.parquet}
+  sets:
+    ko:
+      - {type: wiki, weight: 0.5, dataset: wikimedia/wikipedia, file: 20231101.ko/train-00000-of-00003.parquet}
+      - {type: instruct, weight: 0.5, dataset: nlpai-lab/kullm-v2, offset: 100000}   # LoRA 학습분(앞쪽)과 안 겹침
+    # 영어로 고르면 어떻게 되나 비교하고 싶을 때만 (pruning.variants에 en-* 추가)
+    en:
+      - {type: wiki, weight: 1.0, dataset: wikimedia/wikipedia, file: 20231101.en/train-00000-of-00041.parquet}
 
 heldout:                          # 퍼플렉시티용 텍스트 (보정 데이터와 다른 파일)
   ko: {dataset: wikimedia/wikipedia, file: 20231101.ko/train-00002-of-00003.parquet, n_chars: 300000}
   en: {dataset: wikimedia/wikipedia, file: 20231101.en/train-00040-of-00041.parquet, n_chars: 300000}
 
-pruning:                          # 02_prune.py 로 만들 변형들
+pruning:                          # 02_prune.py
   variants:
-    - {name: ko-reap-k24, calib: ko, criterion: reap, keep: 24}
-    - {name: ko-reap-k16, calib: ko, criterion: reap, keep: 16}
-    - {name: en-reap-k24, calib: en, criterion: reap, keep: 24}
-    - {name: en-reap-k16, calib: en, criterion: reap, keep: 16}
-    - {name: ko-freq-k16, calib: ko, criterion: freq, keep: 16}
+    - {name: ko-k48, calib: ko, criterion: reap, keep: 48}   # 25% 칼질
+    - {name: ko-k32, calib: ko, criterion: reap, keep: 32}   # 50% 칼질
+    # - {name: ko-k24, calib: ko, criterion: reap, keep: 24} # 62.5% (여유 있으면)
+    # - {name: en-k32, calib: en, criterion: reap, keep: 32} # 영어 기준 칼질 비교 (여유 있으면)
 
-quantization:                     # llama-quantize 타입 (gpt-oss는 2880이 256으로 안 나눠져서 K-quant는 Q4_0 등으로 대체됨)
-  base_variant: ko-reap-k16
-  # 변환만 한 GGUF = 전문가 MXFP4(원본 그대로) + 나머지 BF16  -> 프루닝 단계 비교에 사용 (손실 없음)
-  # MXFP4_MOE = 전문가 MXFP4 + 나머지 Q8_0 (배포용),  Q8_0 / Q4_0 = 전부 해당 형식
-  types: [MXFP4_MOE, Q8_0, Q4_0]
+reference_quant: Q6_K             # 칼질 비교용 기준 정밀도: 거의 무손실이면서 원본(약 18GB)도 L4에 들어감
+deploy_quant: Q4_K_M              # 경제성 비교용 배포 형식 (원본도 이 형식으로 하나 더 만든다)
+
+quantization:                     # 03_make_gguf.py --quant
+  base_variant: ko-k32
+  types: [Q4_K_M, Q3_K_M, Q2_K]   # Q6_K(기준)와 비교
 
 lora:                             # 04_train_lora.py
-  base_variant: ko-reap-k16
-  dataset: nlpai-lab/kullm-v2     # apache-2.0
+  base_variant: ko-k32
+  dataset: nlpai-lab/kullm-v2     # apache-2.0, 앞에서부터 n_examples개 (보정분과 안 겹침)
   n_examples: 6000
   max_len: 1024
   epochs: 1
   lr: 2.0e-4
   r: 16
   alpha: 32
-  lora_experts: true              # 전문가 가중치(3D 파라미터)에도 LoRA
+  lora_experts: true              # 남은 전문가 가중치(3D 파라미터)에도 LoRA
   batch_size: 2
   grad_accum: 8
+  quant_after: [Q6_K, Q4_K_M]     # 합친 뒤 다시 양자화할 형식
 
 eval:                             # 05_eval.py
   kmmlu_per_subject: 20           # 45과목 x 20 = 900문항
-  mmlu_per_subject: 10            # 57과목 x 10 = 570문항 (영어 능력이 얼마나 줄었는지 확인용)
+  mmlu_per_subject: 10            # 57과목 x 10 = 570문항 (영어 능력을 얼마나 잃었나 참고용)
   haerae: all                     # 1538문항
-  prompt_format: harmony          # harmony(채팅 형식) | plain
+  prompt_format: chat             # chat(채팅 형식) | plain
   seed: 0
   ppl_ctx: 512
   ppl_chunks: 200

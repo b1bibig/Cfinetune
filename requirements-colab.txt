@@ -9,3 +9,5 @@ pyyaml
 requests
 matplotlib
 pytest
+sentencepiece
+protobuf

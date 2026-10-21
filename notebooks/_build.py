@@ -83,88 +83,84 @@ write("00_smoke_test.ipynb", notebook([
 write("01_calibrate.ipynb", notebook([
     md("""
 # 01. 전문가 중요도 측정 (A100 80GB 또는 G4, 약 1시간 / 약 8~10유닛)
-한국어 위키와 영어 위키를 각각 모델에 흘려 보내며, 층마다 32개 전문가가
+ERNIE-4.5-21B-A3B(층마다 전문가 64개)에 **한국어 데이터**(위키 50% + 지시문 대화 50%, 약 26만 토큰)를 흘려 보내며,
+층마다 전문가가
 - 얼마나 자주 뽑히는지 (빈도, `freq`)
 - 뽑혔을 때 출력에 얼마나 크게 기여하는지 (REAP 점수, `reap`)
 
-를 기록합니다. 결과는 작은 JSON 파일(`results/calib/stats-ko.json`, `stats-en.json`)이고 드라이브에 저장됩니다.
-
-원본 MXFP4를 불러오는 데 문제가 생기면 `--model unsloth/gpt-oss-20b-BF16` 을 붙이세요. 값이 같은 BF16 버전입니다.
+를 기록합니다. 결과는 작은 JSON 파일(`results/calib/stats-ko.json`)이고 드라이브에 저장됩니다.
+원본 BF16이 약 44GB라 A100 80GB 또는 G4가 필요합니다.
 """),
     code(SETUP),
     code(DRIVE),
-    code(GPU_CHECK.replace("{need}", "45").replace("{gpu}", "A100 (80GB) 또는 G4")),
-    code("!python scripts/01_calibrate.py --langs ko en\npush_results()"),
-    md("## 한국어와 영어는 같은 전문가를 쓸까? (보고서용 그림)"),
-    code(r'''import json, matplotlib.pyplot as plt
-from cfinetune.observe import select_experts
-ko = json.load(open("results/calib/stats-ko.json")); en = json.load(open("results/calib/stats-en.json"))
-for k in (24, 16):
-    sk, se = select_experts(ko, "reap", k), select_experts(en, "reap", k)
-    overlap = [len(set(sk[i]) & set(se[i])) / k for i in sk]
-    plt.plot(overlap, marker="o", label=f"keep {k}")
-plt.xlabel("layer"); plt.ylabel("ko/en overlap of kept experts"); plt.ylim(0, 1.05); plt.grid(alpha=.3); plt.legend()
-plt.savefig("results/fig_expert_overlap.png", dpi=150); plt.show()
+    code(GPU_CHECK.replace("{need}", "50").replace("{gpu}", "A100 (80GB) 또는 G4")),
+    code("!python scripts/01_calibrate.py --sets ko\npush_results()"),
+    md("## 한국어는 소수의 전문가만 쓸까? (보고서용 그림)\n층마다 REAP 점수가 높은 순으로 전문가를 늘어놓고, 상위 k개가 전체 점수의 몇 %를 차지하는지 봅니다."),
+    code(r'''import json, numpy as np, matplotlib.pyplot as plt
+st = json.load(open("results/calib/stats-ko.json"))
+shares = []
+for layer in st["layers"].values():
+    s = np.sort(np.array(layer["reap"]) * np.array(layer["freq"]))[::-1]   # 기여도 = 점수 x 빈도
+    shares.append(np.cumsum(s) / s.sum())
+shares = np.array(shares)
+plt.plot(range(1, shares.shape[1] + 1), shares.mean(0), marker=".")
+for k in (32, 48): plt.axvline(k, ls="--", c="gray"); print(f"상위 {k}개가 평균 {shares.mean(0)[k-1]*100:.1f}% 차지")
+plt.xlabel("kept experts (sorted)"); plt.ylabel("cumulative share of Korean contribution"); plt.grid(alpha=.3)
+plt.savefig("results/fig_korean_expert_share.png", dpi=150); plt.show()
 push_results()'''),
 ], gpu="A100"))
 
 # ------------------------------------------------------------------ 02
 write("02_prune_quantize_eval.ipynb", notebook([
     md("""
-# 02. 프루닝 + 양자화 + 평가 (L4, 약 3시간 / 약 5~6유닛)
-변형마다 **프루닝(CPU) → GGUF 변환 → 객관식·퍼플렉시티 평가 → 속도·전력 측정 → 파일 삭제** 순서로 진행합니다.
-결과 JSON은 변형이 끝날 때마다 드라이브에 저장되므로, 세션이 끊겨도 다시 실행하면 끝난 변형은 건너뜁니다.
+# 02. 칼질 + 양자화 + 평가 (L4, 약 3시간 / 약 5~6유닛)
+| 단계 | 만드는 GGUF | 확인하는 것 |
+|---|---|---|
+| 기준 | `original-Q6_K`, `original-Q4_K_M` | 출발점 (Q6_K는 거의 무손실, Q4_K_M은 배포 형식 비교용) |
+| 칼질 | `ko-k48-Q6_K`, `ko-k32-Q6_K` | 전문가를 줄이면 한국어가 얼마나 떨어지나 |
+| 양자화 | `ko-k32-Q4_K_M`, `-Q3_K_M`, `-Q2_K` | 비트를 줄이면 얼마나 떨어지나 |
 
-| 단계 | 변형 |
-|---|---|
-| 기준 | `original` (전문가 32개) |
-| 프루닝 | config의 `pruning.variants` (한국어/영어 보정 × 24/16개, 빈도 기준 비교) |
-| 양자화 | `ko-reap-k16`을 MXFP4_MOE / Q8_0 / Q4_0 로 |
+변형마다 GGUF 만들기 → 객관식·퍼플렉시티 평가 → 속도·전력 측정 → 파일 삭제 순서로 진행합니다.
+결과는 끝날 때마다 드라이브에 저장되므로, 세션이 끊기면 다시 실행하세요. 끝난 것은 건너뜁니다.
+**디스크가 약 100GB 필요합니다.** 아래 `df` 결과를 확인하세요.
 """),
     code(SETUP),
     code(DRIVE),
-    code(GPU_CHECK.replace("{need}", "20").replace("{gpu}", "L4")),
+    code(GPU_CHECK.replace("{need}", "20").replace("{gpu}", "L4") + "\n!df -h /content | tail -1"),
     code("# llama.cpp 빌드 (처음 약 15분, 이후에는 드라이브 캐시에서 복사)\n!bash scripts/build_llama_cpp.sh /content/llama.cpp {DRIVE}/cache"),
     code(r'''from _common import resolve_model_dir, load_config
 cfg = load_config()
-SRC = resolve_model_dir(cfg["model"]["id"])   # 원본 MXFP4 (약 13GB)
+SRC = resolve_model_dir(cfg["model"]["id"])   # 원본 BF16 (약 44GB)
 GGUF, PRUNED = "/content/gguf", "/content/models/pruned"
-os.makedirs(GGUF, exist_ok=True)
+REF, DEPLOY = cfg["reference_quant"], cfg["deploy_quant"]
 
 def done(name):
     return os.path.exists(f"results/eval/{name}.json") and os.path.exists(f"results/bench/{name}.json")
 
-def evaluate(name, gguf):
-    !python scripts/05_eval.py --gguf {gguf} --name {name}
-    !python scripts/06_bench.py --gguf {gguf} --name {name}
-    push_results()'''),
+def run_variant(hf_dir, stem, quants):
+    todo = [q for q in quants if not done(f"{stem}-{q}")]
+    if not todo:
+        print("건너뜀:", stem); return
+    QS = " ".join(todo)
+    !python scripts/03_make_gguf.py --hf-dir {hf_dir} --name {stem} --out-dir {GGUF} --quant {QS}
+    for q in todo:
+        g = f"{GGUF}/{stem}-{q}.gguf"
+        !python scripts/05_eval.py --gguf {g} --name {stem}-{q}
+        !python scripts/06_bench.py --gguf {g} --name {stem}-{q}
+        os.remove(g)
+        push_results()'''),
     md("## 기준: 원본"),
-    code(r'''if not done("original"):
-    !python scripts/03_make_gguf.py --hf-dir {SRC} --out {GGUF}/original.gguf
-    evaluate("original", f"{GGUF}/original.gguf")
-    os.remove(f"{GGUF}/original.gguf")'''),
-    md("## 프루닝 변형"),
-    code(r'''for v in cfg["pruning"]["variants"]:
+    code("run_variant(SRC, \"original\", [REF, DEPLOY])"),
+    md("## 칼질 (+ 기준 변형은 양자화 비교까지)"),
+    code(r'''base = cfg["quantization"]["base_variant"]
+for v in cfg["pruning"]["variants"]:
     name = v["name"]
-    if done(name):
+    quants = [REF] + (cfg["quantization"]["types"] if name == base else [])
+    if all(done(f"{name}-{q}") for q in quants):
         print("건너뜀:", name); continue
     !python scripts/02_prune.py --variant {name} --src {SRC} --out-dir {PRUNED}
-    !python scripts/03_make_gguf.py --hf-dir {PRUNED}/{name} --out {GGUF}/{name}.gguf
-    evaluate(name, f"{GGUF}/{name}.gguf")
-    os.remove(f"{GGUF}/{name}.gguf")
-    if name != cfg["quantization"]["base_variant"]:
-        shutil.rmtree(f"{PRUNED}/{name}")'''),
-    md("## 양자화 비교"),
-    code(r'''base = cfg["quantization"]["base_variant"]
-todo = [q for q in cfg["quantization"]["types"] if not done(f"{base}-{q}")]
-if todo:
-    if not os.path.exists(f"{PRUNED}/{base}"):
-        !python scripts/02_prune.py --variant {base} --src {SRC} --out-dir {PRUNED}
-    QS = " ".join(todo)
-    !python scripts/03_make_gguf.py --hf-dir {PRUNED}/{base} --out {GGUF}/{base}.gguf --quant {QS}
-    for q in todo:
-        evaluate(f"{base}-{q}", f"{GGUF}/{base}-{q}.gguf")
-        os.remove(f"{GGUF}/{base}-{q}.gguf")'''),
+    run_variant(f"{PRUNED}/{name}", name, quants)
+    shutil.rmtree(f"{PRUNED}/{name}")'''),
     md("## 중간 결과 표"),
     code('!python scripts/07_econ.py --measured-gpu "L4 (Colab)"\npush_results()'),
 ], gpu="L4"))
@@ -172,57 +168,46 @@ if todo:
 # ------------------------------------------------------------------ 03
 write("03_lora.ipynb", notebook([
     md("""
-# 03. 저랭크(LoRA) 한국어 추가학습 (A100 40GB, 약 1~2시간 / 약 6~11유닛)
-`ko-reap-k16`(전문가 16개) 모델에 한국어 지시문(KULLM-v2 6천 개)으로 LoRA를 학습합니다.
-- 어텐션 q/k/v/o + 남은 전문가 가중치에 LoRA, 라우터는 고정
-- 학습 후 합친 모델을 GGUF로 바꾸고 다시 4비트(MXFP4_MOE)로 양자화 → 드라이브에 저장
-- 평가는 04 노트북(L4)에서 합니다 (더 싸서)
+# 03. 한국어 저랭크(LoRA) 추가학습 + 평가 (A100 40GB, 약 2시간 / 약 10~12유닛)
+`ko-k32`(전문가 32개)에 한국어 지시문(KULLM-v2, 칼질 보정에 안 쓴 6천 개)으로 LoRA를 학습합니다.
+- 어텐션 + 공유 전문가 + 남은 전문가에 LoRA, 라우터는 고정
+- 학습 후 합쳐서 GGUF(Q6_K, Q4_K_M)로 만들고 **이 노트북에서 바로 평가**합니다
+- 속도·전력은 같은 크기의 `ko-k32` 값을 그대로 씁니다 (구조와 크기가 같음)
 """),
     code(SETUP),
     code(DRIVE),
     code(GPU_CHECK.replace("{need}", "38").replace("{gpu}", "A100")),
-    code("# 변환/양자화만 하면 되므로 CPU 빌드 (약 5분)\n!LLAMA_BACKEND=cpu bash scripts/build_llama_cpp.sh /content/llama.cpp {DRIVE}/cache"),
+    code("!bash scripts/build_llama_cpp.sh /content/llama.cpp {DRIVE}/cache"),
     code(r'''from _common import resolve_model_dir, load_config
 cfg = load_config()
 base = cfg["lora"]["base_variant"]
 SRC = resolve_model_dir(cfg["model"]["id"])
-!python scripts/02_prune.py --variant {base} --src {SRC} --out-dir /content/models/pruned'''),
+!python scripts/02_prune.py --variant {base} --src {SRC} --out-dir /content/models/pruned
+shutil.rmtree(SRC)   # 디스크 확보 (원본은 더 이상 필요 없음)'''),
     code(r'''OUT = f"/content/lora/{base}-lora"
 !python scripts/04_train_lora.py --model /content/models/pruned/{base} --out {OUT}
 shutil.copytree(f"{OUT}/adapter", f"{DRIVE}/lora/{base}-lora/adapter", dirs_exist_ok=True)
 push_results()'''),
-    code(r'''!python scripts/03_make_gguf.py --hf-dir {OUT}/merged --out /content/gguf/{base}-lora.gguf --quant MXFP4_MOE Q8_0
-os.makedirs(f"{DRIVE}/gguf", exist_ok=True)
-for q in ("MXFP4_MOE", "Q8_0"):   # 드라이브 용량이 부족하면 Q8_0 은 빼세요 (약 12GB)
-    shutil.copy(f"/content/gguf/{base}-lora-{q}.gguf", f"{DRIVE}/gguf/")
-!ls -la {DRIVE}/gguf'''),
+    code(r'''QS = " ".join(cfg["lora"]["quant_after"])
+!python scripts/03_make_gguf.py --hf-dir {OUT}/merged --name {base}-lora --out-dir /content/gguf --quant {QS}
+for q in cfg["lora"]["quant_after"]:
+    g = f"/content/gguf/{base}-lora-{q}.gguf"
+    !python scripts/05_eval.py --gguf {g} --name {base}-lora-{q}
+    push_results()'''),
 ], gpu="A100"))
 
 # ------------------------------------------------------------------ 04
-write("04_eval_lora_and_report.ipynb", notebook([
+write("04_report.ipynb", notebook([
     md("""
-# 04. LoRA 모델 평가 + 최종 경제성 보고서 (L4, 약 1시간 / 약 2유닛)
-드라이브 `cfinetune/gguf/`에 있는 GGUF를 02와 똑같은 방법으로 평가하고, 모든 결과로 표와 그래프를 만듭니다.
+# 04. 최종 경제성 보고서 (CPU, 무료)
+01~03의 결과(드라이브 `cfinetune/results/`)를 모아 표와 그래프를 만들고 Qwen3.8-Flash-Next로 확장 계산합니다.
 """),
     code(SETUP),
     code(DRIVE),
-    code(GPU_CHECK.replace("{need}", "20").replace("{gpu}", "L4")),
-    code("!bash scripts/build_llama_cpp.sh /content/llama.cpp {DRIVE}/cache"),
-    code(r'''import glob
-for g in sorted(glob.glob(f"{DRIVE}/gguf/*.gguf")):
-    name = os.path.basename(g)[:-5]
-    if os.path.exists(f"results/eval/{name}.json") and os.path.exists(f"results/bench/{name}.json"):
-        print("건너뜀:", name); continue
-    local = f"/content/{name}.gguf"
-    shutil.copy(g, local)            # 드라이브에서 바로 읽으면 느려서 로컬로 복사
-    !python scripts/05_eval.py --gguf {local} --name {name}
-    !python scripts/06_bench.py --gguf {local} --name {name}
-    os.remove(local)
-    push_results()'''),
     code(r'''!python scripts/07_econ.py --measured-gpu "L4 (Colab)"
 push_results()
 from IPython.display import Markdown, Image, display
 display(Markdown(open("results/report.md").read()))
-for f in ("fig_size_vs_korean.png", "fig_energy.png", "fig_expert_overlap.png"):
+for f in ("fig_size_vs_korean.png", "fig_energy.png", "fig_korean_expert_share.png"):
     if os.path.exists(f"results/{f}"): display(Image(f"results/{f}"))'''),
-], gpu="L4"))
+]))

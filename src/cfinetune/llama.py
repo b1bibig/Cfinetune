@@ -90,12 +90,12 @@ def letter_token_ids(tokenizer, n: int = 5) -> list[list[int]]:
     return out
 
 
-def score_mcq(server: LlamaServer, tokenizer, items: list[dict], fmt: str = "harmony",
+def score_mcq(server: LlamaServer, tokenizer, arch, items: list[dict], fmt: str = "chat",
               n_probs: int = 50, progress=None) -> list[dict]:
     letter_ids = letter_token_ids(tokenizer)
 
     def one(item):
-        ids = tokenizer(mcq_prompt(item, fmt), add_special_tokens=False).input_ids
+        ids = tokenizer(mcq_prompt(arch, item, fmt), add_special_tokens=False).input_ids
         lp = _top_logprobs(server.complete(ids, n_predict=1, n_probs=n_probs))
         scores = [max((lp.get(t, -math.inf) for t in letter_ids[i]), default=-math.inf)
                   for i in range(len(item["choices"]))]
@@ -122,11 +122,11 @@ def summarize_mcq(results: list[dict]) -> dict:
     return out
 
 
-def generate(server: LlamaServer, tokenizer, prompts: list[str], n_predict: int = 400) -> list[str]:
+def generate(server: LlamaServer, tokenizer, arch, prompts: list[str], n_predict: int = 400) -> list[str]:
     outs = []
     for p in prompts:
-        ids = tokenizer(chat_prompt(p), add_special_tokens=False).input_ids
-        outs.append(server.complete(ids, n_predict=n_predict)["content"])
+        ids = tokenizer(chat_prompt(arch, p), add_special_tokens=False).input_ids
+        outs.append(server.complete(ids, n_predict=n_predict, stop=[arch.END])["content"])
     return outs
 
 

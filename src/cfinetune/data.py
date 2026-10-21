@@ -18,18 +18,41 @@ def _wiki_articles(src: dict, min_chars: int = 400):
             yield text
 
 
-def calibration_chunks(src: dict, tokenizer, n_chunks: int, seq_len: int) -> list[list[int]]:
-    """위키 문서를 이어 붙여 seq_len 토큰짜리 조각 n_chunks개를 만든다 (패딩 없음)."""
-    sep = tokenizer("\n\n", add_special_tokens=False).input_ids
+def _chunk_stream(token_lists, seq_len: int, n_chunks: int, sep: list[int]) -> list[list[int]]:
     chunks, buf = [], []
-    for text in _wiki_articles(src):
-        buf += tokenizer(text, add_special_tokens=False).input_ids + sep
+    for ids in token_lists:
+        buf += ids + sep
         while len(buf) >= seq_len and len(chunks) < n_chunks:
             chunks.append(buf[:seq_len])
             buf = buf[seq_len:]
         if len(chunks) >= n_chunks:
             return chunks
     raise RuntimeError(f"조각이 부족함: {len(chunks)}/{n_chunks}")
+
+
+def calibration_chunks(sources: list[dict], tokenizer, arch, n_chunks: int, seq_len: int) -> list[list[int]]:
+    """여러 출처를 weight 비율대로 섞어 seq_len 토큰짜리 조각 n_chunks개를 만든다 (패딩 없음).
+
+    type: wiki     -> 위키 문서를 그대로 이어 붙임
+    type: instruct -> 지시문을 모델의 채팅 형식(질문 + 답변)으로 바꿔 이어 붙임
+    """
+    from .prompts import sft_text
+
+    sep = tokenizer("\n\n", add_special_tokens=False).input_ids
+    total_w = sum(s["weight"] for s in sources)
+    chunks = []
+    for i, src in enumerate(sources):
+        n = round(n_chunks * src["weight"] / total_w) if i < len(sources) - 1 else n_chunks - len(chunks)
+        if src["type"] == "wiki":
+            texts = _wiki_articles(src)
+        elif src["type"] == "instruct":
+            texts = ("".join(sft_text(arch, ex["prompt"], ex["response"]))
+                     for ex in sft_examples(src["dataset"], 10 ** 9, offset=src.get("offset", 0)))
+        else:
+            raise ValueError(src["type"])
+        token_lists = (tokenizer(t, add_special_tokens=False).input_ids for t in texts)
+        chunks += _chunk_stream(token_lists, seq_len, n, sep)
+    return chunks
 
 
 def heldout_text(src: dict) -> str:
@@ -42,23 +65,26 @@ def heldout_text(src: dict) -> str:
     return "\n\n".join(parts)
 
 
-def sft_examples(name: str, n: int, seed: int = 0) -> list[dict]:
-    """[{"prompt", "response"}] 형태로 반환. 기본은 nlpai-lab/kullm-v2 (instruction/input/output)."""
+def sft_examples(name: str, n: int, seed: int = 0, offset: int = 0):
+    """{"prompt", "response"} 를 차례로 내준다. 기본은 nlpai-lab/kullm-v2 (instruction/input/output).
+
+    같은 seed로 섞은 순서에서 offset부터 가져오므로, 보정용(offset 큼)과 LoRA 학습용(offset 0)이 겹치지 않는다.
+    """
     ds = load_dataset(name, split="train")
     idx = list(range(len(ds)))
     random.Random(seed).shuffle(idx)
-    out = []
-    for i in idx:
+    count = 0
+    for i in idx[offset:]:
         row = ds[i]
         prompt = row["instruction"].strip()
         if row.get("input"):
             prompt += "\n\n" + row["input"].strip()
         resp = row["output"].strip()
         if prompt and resp:
-            out.append({"prompt": prompt, "response": resp})
-        if len(out) >= n:
-            break
-    return out
+            yield {"prompt": prompt, "response": resp}
+            count += 1
+        if count >= n:
+            return
 
 
 # ---------------------------------------------------------------- 평가 문항

@@ -1,10 +1,9 @@
 """4단계: 프루닝한 모델에 한국어 지시문으로 저랭크(LoRA) 추가학습.
 
-필요 GPU: 전문가 16개 모델은 A100 40GB (BF16 약 23GB + 학습 메모리), 24개 모델은 A100 80GB
-- 원본 형식(MXFP4) 체크포인트를 불러올 때 BF16으로 풀어서 학습한다.
+필요 GPU: ERNIE 전문가 32개 모델은 A100 40GB (BF16 약 23GB + 학습 메모리), 48개 모델은 A100 80GB
 - 라우터는 학습하지 않는다 (프루닝으로 정한 전문가 선택 구조를 유지).
-- 어텐션 q/k/v/o + (선택) 전문가 3D 가중치(gate_up_proj, down_proj)에 LoRA.
-- 손실은 답변(assistant final) 부분에만 건다.
+- 어텐션 q/k/v/o + 공유 전문가 + (선택) 남은 전문가 3D 가중치(gate_up_proj, down_proj)에 LoRA.
+- 손실은 답변 부분에만 건다.
 출력: {out}/adapter (LoRA만), {out}/merged (합친 BF16 체크포인트, GGUF 변환용)
 """
 
@@ -19,14 +18,15 @@ from peft import LoraConfig, get_peft_model
 from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer, Trainer,
                           TrainingArguments)
 
+from cfinetune.arch import arch_of
 from cfinetune.data import sft_examples
 from cfinetune.prompts import sft_text
 
 
-def tokenize_examples(tok, examples, max_len):
+def tokenize_examples(tok, arch, examples, max_len):
     rows, dropped = [], 0
     for ex in examples:
-        head, tail = sft_text(ex["prompt"], ex["response"])
+        head, tail = sft_text(arch, ex["prompt"], ex["response"])
         h = tok(head, add_special_tokens=False).input_ids
         t = tok(tail, add_special_tokens=False).input_ids
         if len(h) + 16 > max_len:
@@ -66,12 +66,10 @@ def load_for_training(path, device_map="auto"):
                                                 attn_implementation="eager", **kw)
 
 
-def lora_config(c, n_layers):
-    target_params = None
-    if c["lora_experts"]:
-        target_params = [f"{i}.mlp.experts.{p}" for i in range(n_layers) for p in ("gate_up_proj", "down_proj")]
+def lora_config(c, model):
+    modules, params = arch_of(model).lora_targets(model)
     return LoraConfig(r=c["r"], lora_alpha=c["alpha"], lora_dropout=0.0, bias="none", task_type="CAUSAL_LM",
-                      target_modules=["q_proj", "k_proj", "v_proj", "o_proj"], target_parameters=target_params)
+                      target_modules=modules, target_parameters=params if c["lora_experts"] else None)
 
 
 def save_merged(model, tok, src_dir, dst):
@@ -80,12 +78,14 @@ def save_merged(model, tok, src_dir, dst):
     tok.save_pretrained(dst)
     cfg_path = Path(dst) / "config.json"
     cfg = json.loads(cfg_path.read_text())
-    cfg.pop("quantization_config", None)  # BF16로 저장됐으므로 MXFP4 표시 제거 (GGUF 변환이 헷갈리지 않게)
+    cfg.pop("quantization_config", None)  # (gpt-oss) BF16로 저장됐으므로 MXFP4 표시 제거
     cfg["dtype"] = cfg["torch_dtype"] = "bfloat16"
     cfg_path.write_text(json.dumps(cfg, indent=2))
-    for name in ("chat_template.jinja", "generation_config.json", "prune_info.json"):
-        if (Path(src_dir) / name).exists():
-            shutil.copy2(Path(src_dir) / name, Path(dst) / name)
+    # 토크나이저 원본 파일(tokenizer.model 등)처럼 save_pretrained가 안 쓰는 파일은 원본 폴더에서 복사
+    for p in Path(src_dir).iterdir():
+        if p.is_file() and not (Path(dst) / p.name).exists() and p.suffix not in (".safetensors", ".bin") \
+                and p.name != "model.safetensors.index.json":
+            shutil.copy2(p, Path(dst) / p.name)
 
 
 def main():
@@ -106,13 +106,13 @@ def main():
     model = load_for_training(args.model, device_map="cpu" if args.cpu else "auto")
     model.config.use_cache = False
 
-    examples = sft_examples(c["dataset"], args.n_examples or c["n_examples"])
-    rows, dropped = tokenize_examples(tok, examples, c["max_len"])
+    examples = list(sft_examples(c["dataset"], args.n_examples or c["n_examples"]))
+    rows, dropped = tokenize_examples(tok, arch_of(model), examples, c["max_len"])
     print(f"학습 예제 {len(rows)}개 (너무 길어 제외 {dropped}개)")
 
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
-    model = get_peft_model(model, lora_config(c, model.config.num_hidden_layers))
+    model = get_peft_model(model, lora_config(c, model))
     model.print_trainable_parameters()
 
     targs = TrainingArguments(

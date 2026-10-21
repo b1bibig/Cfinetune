@@ -2,7 +2,8 @@
 
 입력: results/eval/*.json, results/bench/*.json
 출력: results/summary.csv, results/report.md, results/fig_*.png
-예) python scripts/07_econ.py --measured-gpu "L4 (Colab)" --baseline original
+예) python scripts/07_econ.py --measured-gpu "L4 (Colab)"
+변형 이름 규칙: {칼질변형 또는 original}[-lora]-{양자화형식}  예) original-Q6_K, ko-k32-Q4_K_M, ko-k32-lora-Q4_K_M
 """
 
 import argparse
@@ -23,7 +24,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
     ap.add_argument("--measured-gpu", default="L4 (Colab)", help="벤치를 돌린 GPU (config economics.gpus 이름)")
-    ap.add_argument("--baseline", default="original")
+    ap.add_argument("--baseline", default="original-Q6_K", help="한국어 성능 유지율의 기준")
+    ap.add_argument("--cost-baseline", default="original-Q4_K_M", help="크기·에너지 비율의 기준 (같은 배포 형식)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -43,19 +45,21 @@ def main():
             ko = [ev["mcq"][t]["acc"] for t in ("kmmlu", "haerae") if t in ev["mcq"]]
             if ko:
                 row["ko_avg"] = round(sum(ko) / len(ko) * 100, 1)
-        if n in benches:
-            row.update(variant_economics(benches[n], catalog, args.measured_gpu, cfg["economics"]["vram_overhead_gb"]))
+        # LoRA를 합친 모델은 크기·구조가 원래 모델과 같아서 속도·전력이 같다 -> 벤치가 없으면 원래 모델 값을 쓴다
+        b = benches.get(n) or benches.get(n.replace("-lora-", "-"))
+        if b:
+            row.update(variant_economics(b, catalog, args.measured_gpu, cfg["economics"]["vram_overhead_gb"]))
         rows.append(row)
 
     base = next((r for r in rows if r["variant"] == args.baseline), None)
-    if base:
-        for r in rows:
-            if "ko_avg" in r and "ko_avg" in base:
-                r["ko_retention_%"] = round(r["ko_avg"] / base["ko_avg"] * 100, 1)
-            if "wh_per_1k_tok" in r and "wh_per_1k_tok" in base:
-                r["energy_vs_base_%"] = round(r["wh_per_1k_tok"] / base["wh_per_1k_tok"] * 100, 1)
-            if "file_gb" in r and "file_gb" in base:
-                r["size_vs_base_%"] = round(r["file_gb"] / base["file_gb"] * 100, 1)
+    cbase = next((r for r in rows if r["variant"] == args.cost_baseline), base)
+    for r in rows:
+        if base and "ko_avg" in r and "ko_avg" in base:
+            r["ko_vs_base_%"] = round(r["ko_avg"] / base["ko_avg"] * 100, 1)
+        if cbase and "wh_per_1k_tok" in r and "wh_per_1k_tok" in cbase:
+            r["energy_vs_base_%"] = round(r["wh_per_1k_tok"] / cbase["wh_per_1k_tok"] * 100, 1)
+        if cbase and "file_gb" in r and "file_gb" in cbase:
+            r["size_vs_base_%"] = round(r["file_gb"] / cbase["file_gb"] * 100, 1)
 
     cols = sorted({k for r in rows for k in r}, key=lambda k: (k != "variant", k))
     with open(RESULTS / "summary.csv", "w", newline="", encoding="utf-8") as f:
@@ -63,26 +67,31 @@ def main():
         w.writeheader()
         w.writerows(rows)
 
-    main_cols = [c for c in ["variant", "kmmlu_acc", "haerae_acc", "mmlu_acc", "ko_avg", "ko_retention_%", "ppl_ko",
+    main_cols = [c for c in ["variant", "kmmlu_acc", "haerae_acc", "mmlu_acc", "ko_avg", "ko_vs_base_%", "ppl_ko",
                              "ppl_en", "file_gb", "size_vs_base_%", "tg_tps", "tg_power_w", "wh_per_1k_tok",
                              "energy_vs_base_%", "krw_per_1m_tok_measured_gpu", "cheapest_gpu",
                              "cheapest_gpu_krw_per_hour"] if c in cols]
 
     # Flash-Next 확장: gpt-oss에서 측정한 '남긴 비율 -> 한국어 성능 유지율'을 그대로 적용
     n_exp = cfg["model"]["num_experts"]
+    ref_q = cfg["reference_quant"]
     fn_rows = []
     for r in rows:
-        v = next((v for v in cfg["pruning"]["variants"] if v["name"] == r["variant"]), None)
-        ratio = v["keep"] / n_exp if v else (1.0 if r["variant"] == args.baseline else None)
+        if not r["variant"].endswith(f"-{ref_q}"):
+            continue  # 기준 정밀도로 잰 칼질 효과만 사용
+        stem = r["variant"][: -len(ref_q) - 1]
+        v = next((v for v in cfg["pruning"]["variants"] if v["name"] == stem.removesuffix("-lora")), None)
+        ratio = v["keep"] / n_exp if v else (1.0 if stem.startswith("original") else None)
         if ratio is None:
             continue
         mem = flash_next_memory(ratio)
         fit = next((g for g in sorted(catalog, key=lambda g: g["krw_per_hour"]) if g["vram_gb"] >= mem["gpu_gb"] + 4), None)
-        fn_rows.append({"gpt-oss 변형": r["variant"], "남긴 비율": f"{ratio:.2f}", "FlashNext 전문가": mem["keep_experts"],
+        fn_rows.append({"실험 변형": r["variant"], "남긴 비율": f"{ratio:.2f}", "FlashNext 전문가": mem["keep_experts"],
                         "GPU 메모리 GB": mem["gpu_gb"], "전체 GB(n-gram 포함)": mem["total_gb"],
+                        "48GB GPU 1장": "들어감" if mem["gpu_gb"] + 4 <= 48 else "안 들어감",
                         "가장 싼 GPU": fit["name"] if fit else "여러 장 필요",
                         "시간당 원": round(fit["krw_per_hour"]) if fit else "",
-                        "예상 한국어 유지율 %": r.get("ko_retention_%", "")})
+                        "한국어 점수 (원본 대비 %)": r.get("ko_vs_base_%", "")})
 
     md = ["# 결과 요약", "", f"벤치 GPU: {args.measured_gpu} / 기준 변형: {args.baseline}", "",
           to_markdown(rows, main_cols), "", "## Qwen3.8-Flash-Next 확장 계산", "",
