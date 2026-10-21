@@ -1,0 +1,11 @@
+# 코랩에 이미 있는 torch를 그대로 쓰고, 나머지만 맞춘다 (2026-10 확인 버전)
+transformers>=5.20,<6
+peft>=0.21,<1
+accelerate>=1.0
+datasets>=3.0
+safetensors
+huggingface_hub
+pyyaml
+requests
+matplotlib
+pytest
