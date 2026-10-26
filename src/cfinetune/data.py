@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import re
 from collections import defaultdict
 
 from datasets import get_dataset_config_names, load_dataset
@@ -47,7 +48,7 @@ def calibration_chunks(sources: list[dict], tokenizer, arch, n_chunks: int, seq_
             texts = _wiki_articles(src)
         elif src["type"] == "instruct":
             texts = ("".join(sft_text(arch, ex["prompt"], ex["response"]))
-                     for ex in sft_examples(src["dataset"], 10 ** 9, offset=src.get("offset", 0)))
+                     for ex in sft_examples(src["dataset"], 10 ** 9, offset=src.get("offset", 0), file=src.get("file")))
         else:
             raise ValueError(src["type"])
         token_lists = (tokenizer(t, add_special_tokens=False).input_ids for t in texts)
@@ -96,23 +97,56 @@ def heldout_text(src: dict) -> str:
     return "\n\n".join(parts)
 
 
-def sft_examples(name: str, n: int, seed: int = 0, offset: int = 0):
-    """{"prompt", "response"} 를 차례로 내준다. 기본은 nlpai-lab/kullm-v2 (instruction/input/output).
+def sft_pair(row: dict) -> tuple[str, str] | None:
+    """여러 형식의 지시문 데이터를 (질문, 답변) 하나로.
+
+    - messages (대화, 예: lemon-mint/smol-koreantalk): 첫 질문과 그 답. 시스템 메시지는 질문 앞에 붙임
+    - instruction/input/output (예: nlpai-lab/kullm-v2)
+    - question/answer
+    """
+    if "messages" in row:
+        msgs = row["messages"]
+        u = next((i for i, m in enumerate(msgs) if m["role"] == "user"), None)
+        if u is None or u + 1 >= len(msgs) or msgs[u + 1]["role"] != "assistant":
+            return None
+        system = [m["content"].strip() for m in msgs[:u] if m["role"] == "system" and m["content"].strip()]
+        prompt, resp = "\n\n".join(system + [msgs[u]["content"].strip()]), msgs[u + 1]["content"]
+    elif "instruction" in row:
+        prompt = row["instruction"].strip() + ("\n\n" + row["input"].strip() if row.get("input") else "")
+        resp = row["output"]
+    else:
+        prompt, resp = row["question"].strip(), row["answer"]
+    resp = resp.strip()
+    return (prompt, resp) if prompt and resp else None
+
+
+_CODE = re.compile(r"```.*?(```|$)|`[^`\n]*`|\$\$.*?\$\$|\$[^$\n]*\$", re.S)
+
+
+def is_korean_answer(text: str, min_ratio: float = 0.5, min_chars: int = 10) -> bool:
+    """코드·수식을 뺀 나머지에서 한글이 (한글+영문 글자의) min_ratio 이상이고 min_chars자 이상인지.
+
+    번역 데이터에는 질문만 번역되고 답은 영어로 남은 예제(예: 영어 문장 고치기)가 섞여 있어서 거른다.
+    """
+    t = _CODE.sub(" ", text)
+    h = len(re.findall("[\uac00-\ud7a3]", t))
+    return h >= min_chars and h / max(h + len(re.findall("[A-Za-z]", t)), 1) >= min_ratio
+
+
+def sft_examples(name: str, n: int, seed: int = 0, offset: int = 0, file: str | None = None):
+    """{"prompt", "response"} 를 차례로 내준다 (형식은 sft_pair 참고). file을 주면 그 파일만 받는다.
 
     같은 seed로 섞은 순서에서 offset부터 가져오므로, 보정용(offset 큼)과 LoRA 학습용(offset 0)이 겹치지 않는다.
+    답이 한국어가 아닌 예제는 건너뛴다 (is_korean_answer).
     """
-    ds = load_dataset(name, split="train")
+    ds = load_dataset(name, data_files=file, split="train") if file else load_dataset(name, split="train")
     idx = list(range(len(ds)))
     random.Random(seed).shuffle(idx)
     count = 0
     for i in idx[offset:]:
-        row = ds[i]
-        prompt = row["instruction"].strip()
-        if row.get("input"):
-            prompt += "\n\n" + row["input"].strip()
-        resp = row["output"].strip()
-        if prompt and resp:
-            yield {"prompt": prompt, "response": resp}
+        pair = sft_pair(ds[i])
+        if pair and is_korean_answer(pair[1]):
+            yield {"prompt": pair[0], "response": pair[1]}
             count += 1
         if count >= n:
             return

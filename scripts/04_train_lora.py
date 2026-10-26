@@ -184,7 +184,7 @@ def main():
                 model, ids, lambda: packed_chunks(s, tok, n_tok, s["seq_len"]), s, ckpt / "stage1",
                 args.stage1_max_steps, args.cpu)
 
-    examples = list(sft_examples(c["dataset"], args.n_examples or c["n_examples"]))
+    examples = list(sft_examples(c["dataset"], args.n_examples or c["n_examples"], file=c.get("dataset_file")))
     rows, dropped = tokenize_examples(tok, arch_of(model), examples, c["max_len"])
     print(f"2단계 학습 예제 {len(rows)}개 (너무 길어 제외 {dropped}개)")
     model = get_peft_model(model, lora_config(c, model, ids))

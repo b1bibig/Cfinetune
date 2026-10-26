@@ -15,7 +15,7 @@ calibration:                      # 01_calibrate.py : 무엇을 남길지 정하
   sets:
     ko:
       - {type: wiki, weight: 0.5, dataset: wikimedia/wikipedia, file: 20231101.ko/train-00000-of-00003.parquet}
-      - {type: instruct, weight: 0.5, dataset: nlpai-lab/kullm-v2, offset: 100000}   # LoRA 학습분(앞쪽)과 안 겹침
+      - {type: instruct, weight: 0.5, dataset: lemon-mint/smol-koreantalk, file: data/train-00000-of-00008.parquet, offset: 20000}   # LoRA 학습분(앞쪽)과 안 겹침
     # 영어로 고르면 어떻게 되나 비교하고 싶을 때만 (pruning.variants에 en-* 추가)
     en:
       - {type: wiki, weight: 1.0, dataset: wikimedia/wikipedia, file: 20231101.en/train-00000-of-00041.parquet}
@@ -58,7 +58,8 @@ quantization:                     # 03_make_gguf.py --quant
 
 lora:                             # 04_train_lora.py
   base_variant: ko-k32
-  dataset: nlpai-lab/kullm-v2     # apache-2.0, 앞에서부터 n_examples개 (보정분과 안 겹침)
+  dataset: lemon-mint/smol-koreantalk   # apache-2.0, 최신 AI로 번역한 자연스러운 한국어 대화 (KULLM-v2는 DeepL 번역투)
+  dataset_file: data/train-00000-of-00008.parquet   # 8개 중 첫 파일만 (약 5만 7천 개). 앞에서부터 n_examples개 (보정분과 안 겹침)
   n_examples: 6000
   max_len: 1024
   epochs: 1

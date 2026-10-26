@@ -259,3 +259,17 @@ def test_answer_energy_and_service_day(monkeypatch):
     assert abs(d["kwh_per_day"] - (0.2 / 1000 * 3_600_000 / 1000 + 25 * 14 / 1000)) < 1e-3
     assert abs(d["kg_co2_per_year"] - d["kwh_per_year"] * econ["kg_co2_per_kwh"]) < 1
     assert service_day(row, {**econ, "service": {"ko_chars_per_day": 36_000_000}})["n_gpu"] == 5  # 100시간 -> 5장
+
+
+def test_sft_formats_and_korean_filter():
+    from cfinetune.data import is_korean_answer, sft_pair
+
+    msgs = {"messages": [{"role": "system", "content": "친절한 비서"}, {"role": "user", "content": "안녕?"},
+                         {"role": "assistant", "content": "안녕하세요!"}, {"role": "user", "content": "또"}]}
+    assert sft_pair(msgs) == ("친절한 비서\n\n안녕?", "안녕하세요!")
+    assert sft_pair({"messages": [{"role": "user", "content": "질문만"}]}) is None
+    assert sft_pair({"instruction": "요약해", "input": "본문", "output": " 요약 "}) == ("요약해\n\n본문", "요약")
+    assert sft_pair({"question": "질문", "answer": "답"}) == ("질문", "답")
+    assert is_korean_answer("다음은 함수를 구현하는 방법이에요:\n```python\ndef f(x):\n    return x * 2\n```\n입력의 두 배를 돌려줘요.")
+    assert not is_korean_answer("The new employee was visibly nervous on his first day.")
+    assert not is_korean_answer("3")
