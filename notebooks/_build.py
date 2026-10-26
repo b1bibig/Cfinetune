@@ -72,11 +72,13 @@ def write(name, nb):
 write("00_smoke_test.ipynb", notebook([
     md("""
 # 00. 환경 점검 (무료, GPU 필요 없음)
-작은 무작위 gpt-oss 모델로 파이프라인 코드가 이 환경에서 잘 도는지 확인합니다.
+작은 무작위 MoE 모델(ERNIE·gpt-oss 구조)로 파이프라인 코드가 이 환경에서 잘 도는지 확인합니다.
+llama.cpp를 빌드해서 GGUF 변환과 어휘 확장 토크나이저 테스트까지 돌립니다 (CPU 빌드 약 10분).
 전부 `passed`가 나오면 다음 노트북으로 넘어가세요. 코랩 유닛을 쓰지 않도록 **CPU 런타임**으로 실행하세요.
 """),
     code(SETUP),
-    code("!python -m pytest tests -q"),
+    code("!LLAMA_BACKEND=cpu bash scripts/build_llama_cpp.sh /content/llama.cpp"),
+    code("!LLAMA_CPP_DIR=/content/llama.cpp python -m pytest tests -q"),
 ]))
 
 # ------------------------------------------------------------------ 01
@@ -108,6 +110,17 @@ for k in (32, 48): plt.axvline(k, ls="--", c="gray"); print(f"상위 {k}개가 �
 plt.xlabel("kept experts (sorted)"); plt.ylabel("cumulative share of Korean contribution"); plt.grid(alpha=.3)
 plt.savefig("results/fig_korean_expert_share.png", dpi=150); plt.show()
 push_results()'''),
+    md("""
+## (선택) 원본 BF16의 속도·전력 측정 (약 45분 / 약 6유닛)
+원본을 그대로(BF16, 약 44GB) 돌리려면 48GB 이상 GPU가 필요합니다. 원본을 이미 받아 둔 이 세션에서
+속도·전력을 재 두면 "큰 GPU의 원본 vs 작은 GPU의 최종 모델"을 직접 비교할 수 있습니다.
+"""),
+    code("# llama.cpp 빌드 (약 15분, 드라이브에 캐시)\n!bash scripts/build_llama_cpp.sh /content/llama.cpp {DRIVE}/cache"),
+    code(r'''!mkdir -p /content/gguf && df -h /content | tail -1
+!python /content/llama.cpp/convert_hf_to_gguf.py /content/models/baidu__ERNIE-4.5-21B-A3B-PT --outfile /content/gguf/original-BF16.gguf --outtype bf16
+!python scripts/06_bench.py --gguf /content/gguf/original-BF16.gguf --name original-BF16
+push_results()'''),
+    md("끝나면 **런타임 → 런타임 연결 해제 및 삭제**를 눌러 유닛이 계속 나가지 않게 하세요."),
 ], gpu="A100"))
 
 # ------------------------------------------------------------------ 02
@@ -135,7 +148,8 @@ GGUF, PRUNED = "/content/gguf", "/content/models/pruned"
 REF, DEPLOY = cfg["reference_quant"], cfg["deploy_quant"]
 
 def done(name):
-    return os.path.exists(f"results/eval/{name}.json") and os.path.exists(f"results/bench/{name}.json")
+    import glob
+    return os.path.exists(f"results/eval/{name}.json") and bool(glob.glob(f"results/bench/{name}@*.json"))
 
 def run_variant(hf_dir, stem, quants):
     todo = [q for q in quants if not done(f"{stem}-{q}")]
@@ -162,17 +176,21 @@ for v in cfg["pruning"]["variants"]:
     run_variant(f"{PRUNED}/{name}", name, quants)
     shutil.rmtree(f"{PRUNED}/{name}")'''),
     md("## 중간 결과 표"),
-    code('!python scripts/07_econ.py --measured-gpu "L4 (Colab)"\npush_results()'),
+    code('!python scripts/07_econ.py\npush_results()'),
 ], gpu="L4"))
 
 # ------------------------------------------------------------------ 03
 write("03_lora.ipynb", notebook([
     md("""
-# 03. 한국어 저랭크(LoRA) 추가학습 + 평가 (A100 40GB, 약 2시간 / 약 10~12유닛)
-`ko-k32`(전문가 32개)에 한국어 지시문(KULLM-v2, 칼질 보정에 안 쓴 6천 개)으로 LoRA를 학습합니다.
-- 어텐션 + 공유 전문가 + 남은 전문가에 LoRA, 라우터는 고정
-- 학습 후 합쳐서 GGUF(Q6_K, Q4_K_M)로 만들고 **이 노트북에서 바로 평가**합니다
-- 속도·전력은 같은 크기의 `ko-k32` 값을 그대로 씁니다 (구조와 크기가 같음)
+# 03. 한국어 어휘 확장 + 추가학습 + 평가 (A100, 시간은 config의 학습량에 따라)
+`ko-k32`(전문가 32개)를 한국어로 개조합니다.
+1. **어휘 확장 (CPU, 수 분)**: 한국어 BPE를 학습해 한국어 토큰 `vocab.n_new`개를 덧붙입니다. 같은 한국어를 약 40% 적은 토큰으로 처리합니다.
+2. **1단계 학습**: 모델은 고정하고 새 토큰 임베딩만 한국어 위키로 학습합니다.
+3. **2단계 학습**: 한국어 지시문(KULLM-v2 6천 개)으로 LoRA (어텐션 + 공유 전문가 + 남은 전문가, 라우터 고정) + 새 토큰 임베딩.
+4. 합쳐서 GGUF(Q6_K, Q4_K_M)로 만들고 바로 평가합니다. 배포 형식(Q4_K_M)은 드라이브에 저장해 04 노트북에서 작은 GPU로 잽니다.
+
+학습 중간 저장은 드라이브(`cfinetune/ckpt/`)에 하므로, 세션이 끊기면 **처음부터 다시 실행**하면 이어서 학습합니다.
+드라이브에 약 12GB 여유가 필요합니다.
 """),
     code(SETUP),
     code(DRIVE),
@@ -180,31 +198,90 @@ write("03_lora.ipynb", notebook([
     code("!bash scripts/build_llama_cpp.sh /content/llama.cpp {DRIVE}/cache"),
     code(r'''from _common import resolve_model_dir, load_config
 cfg = load_config()
-base = cfg["lora"]["base_variant"]
-SRC = resolve_model_dir(cfg["model"]["id"])
-!python scripts/02_prune.py --variant {base} --src {SRC} --out-dir /content/models/pruned
-shutil.rmtree(SRC)   # 디스크 확보 (원본은 더 이상 필요 없음)'''),
-    code(r'''OUT = f"/content/lora/{base}-lora"
-!python scripts/04_train_lora.py --model /content/models/pruned/{base} --out {OUT}
-shutil.copytree(f"{OUT}/adapter", f"{DRIVE}/lora/{base}-lora/adapter", dirs_exist_ok=True)
-push_results()'''),
-    code(r'''QS = " ".join(cfg["lora"]["quant_after"])
-!python scripts/03_make_gguf.py --hf-dir {OUT}/merged --name {base}-lora --out-dir /content/gguf --quant {QS}
-for q in cfg["lora"]["quant_after"]:
-    g = f"/content/gguf/{base}-lora-{q}.gguf"
-    !python scripts/05_eval.py --gguf {g} --name {base}-lora-{q}
+base, VX = cfg["lora"]["base_variant"], cfg["vocab"]["enabled"]
+NAME = f"{base}{'-vx' if VX else ''}-lora"
+TRAIN_IN = f"/content/models/pruned/{base}{'-vx' if VX else ''}"
+OUT, CKPT = f"/content/lora/{NAME}", f"{DRIVE}/ckpt/{NAME}"
+QUANTS, DEPLOY = cfg["lora"]["quant_after"], cfg["deploy_quant"]
+
+def done():
+    return all(os.path.exists(f"results/eval/{NAME}-{q}.json") for q in QUANTS)
+
+def merged():
+    return os.path.exists(f"{OUT}/merged/config.json")
+
+print(NAME, "- 평가까지 끝남" if done() else "")'''),
+    md("## 1. 칼질 + 어휘 확장 (CPU)"),
+    code(r'''if not done() and not merged() and not os.path.exists(f"{TRAIN_IN}/config.json"):
+    SRC = resolve_model_dir(cfg["model"]["id"])
+    !python scripts/02_prune.py --variant {base} --src {SRC} --out-dir /content/models/pruned
+    shutil.rmtree(SRC)   # 디스크 확보 (원본은 더 이상 필요 없음)
+    if VX:
+        !python scripts/02b_extend_vocab.py --src /content/models/pruned/{base} --dst {TRAIN_IN}
+        shutil.rmtree(f"/content/models/pruned/{base}")
     push_results()'''),
+    md("""
+## (선택) 시범 학습: 속도와 메모리 재기 (약 10분)
+각 단계를 5스텝만 돌려 `train_samples_per_second`와 최대 VRAM을 봅니다 (1단계는 x1024 하면 초당 토큰).
+이 속도로 `configs/experiment.yaml`의 `vocab.stage1.n_tokens`를 정하세요.
+"""),
+    code(r'''!nohup nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -lms 1000 > /content/mem.log 2>&1 &
+!python scripts/04_train_lora.py --model {TRAIN_IN} --out /content/pilot --ckpt-dir /content/pilot/ckpt --stage1-tokens 300000 --stage1-max-steps 5 --max-steps 5 --no-merge
+!pkill nvidia-smi; echo "최대 VRAM(MiB):"; sort -n /content/mem.log | tail -1
+shutil.rmtree("/content/pilot", ignore_errors=True)'''),
+    md("## 2. 학습 (1단계 + 2단계, 끊기면 이 셀까지 다시 실행)"),
+    code(r'''if not done() and not merged():
+    !python scripts/04_train_lora.py --model {TRAIN_IN} --out {OUT} --ckpt-dir {CKPT}
+    if merged():
+        shutil.copytree(f"{OUT}/adapter", f"{DRIVE}/lora/{NAME}/adapter", dirs_exist_ok=True)
+        shutil.rmtree(f"{CKPT}/stage2", ignore_errors=True)   # 드라이브 공간 확보 (1단계 결과는 남김)
+    push_results()'''),
+    md("## 3. GGUF 변환 + 평가"),
+    code(r'''todo = [q for q in QUANTS if not os.path.exists(f"results/eval/{NAME}-{q}.json")]
+if todo:
+    QS = " ".join(todo)
+    !python scripts/03_make_gguf.py --hf-dir {OUT}/merged --name {NAME} --out-dir /content/gguf --quant {QS}
+    for q in todo:
+        g = f"/content/gguf/{NAME}-{q}.gguf"
+        !python scripts/05_eval.py --gguf {g} --name {NAME}-{q} --tokenizer {OUT}/merged
+        push_results()
+g = f"/content/gguf/{NAME}-{DEPLOY}.gguf"
+if os.path.exists(g):
+    os.makedirs(f"{DRIVE}/gguf", exist_ok=True)
+    shutil.copy(g, f"{DRIVE}/gguf/")   # 04 노트북(작은 GPU 측정)용
+    print("드라이브에 저장:", f"{DRIVE}/gguf/{NAME}-{DEPLOY}.gguf")'''),
+    md("끝나면 **런타임 → 런타임 연결 해제 및 삭제**를 눌러 유닛이 계속 나가지 않게 하세요."),
 ], gpu="A100"))
 
 # ------------------------------------------------------------------ 04
-write("04_report.ipynb", notebook([
+write("04_small_gpu.ipynb", notebook([
     md("""
-# 04. 최종 경제성 보고서 (CPU, 무료)
-01~03의 결과(드라이브 `cfinetune/results/`)를 모아 표와 그래프를 만들고 Qwen3.8-Flash-Next로 확장 계산합니다.
+# 04. 최종 모델을 작은 GPU에서 재기 (T4 또는 L4, 약 30분 / 1유닛 이하)
+03에서 드라이브에 저장한 최종 모델(배포 형식 Q4_K_M)의 속도·전력·메모리를 잽니다.
+**T4 런타임에서 한 번, L4 런타임에서 한 번** 실행하면 두 GPU 결과가 모두 남습니다.
 """),
     code(SETUP),
     code(DRIVE),
-    code(r'''!python scripts/07_econ.py --measured-gpu "L4 (Colab)"
+    code("!nvidia-smi --query-gpu=name,memory.total --format=csv"),
+    code("!bash scripts/build_llama_cpp.sh /content/llama.cpp {DRIVE}/cache"),
+    code(r'''from _common import load_config
+cfg = load_config()
+NAME = f"{cfg['lora']['base_variant']}{'-vx' if cfg['vocab']['enabled'] else ''}-lora-{cfg['deploy_quant']}"
+!cp {DRIVE}/gguf/{NAME}.gguf /content/
+!python scripts/06_bench.py --gguf /content/{NAME}.gguf --name {NAME}
+push_results()'''),
+    md("끝나면 **런타임 → 런타임 연결 해제 및 삭제**를 누르세요."),
+], gpu="T4"))
+
+# ------------------------------------------------------------------ 05
+write("05_report.ipynb", notebook([
+    md("""
+# 05. 최종 경제성 보고서 (CPU, 무료)
+01~04의 결과(드라이브 `cfinetune/results/`)를 모아 표와 그래프를 만들고 Qwen3.8-Flash-Next로 확장 계산합니다.
+"""),
+    code(SETUP),
+    code(DRIVE),
+    code(r'''!python scripts/07_econ.py
 push_results()
 from IPython.display import Markdown, Image, display
 display(Markdown(open("results/report.md").read()))

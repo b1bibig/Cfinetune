@@ -1,7 +1,7 @@
 """2단계: 측정한 중요도로 전문가를 잘라낸 체크포인트를 만든다 (CPU로 충분, 수 분).
 
-원본 MXFP4 블록을 그대로 잘라 옮기므로 남은 전문가의 가중치는 원본과 비트 단위로 같다.
-예) python scripts/02_prune.py --variant ko-reap-k16
+원본 가중치를 그대로 잘라 옮기므로 남은 전문가의 가중치는 원본과 비트 단위로 같다.
+예) python scripts/02_prune.py --variant ko-k32
     python scripts/02_prune.py --all
 """
 

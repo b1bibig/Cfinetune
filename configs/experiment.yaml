@@ -1,6 +1,7 @@
 # 실험 설정 한 곳에 모아두기 (탐구 보고서의 "통제 변인"이 여기 다 있음)
-# 목표: 한국어를 못하는 MoE 모델을 칼질(전문가 프루닝)하고, 양자화하고, 한국어로 추가학습해서
-#       "더 작은데 한국어는 원본보다 잘하는" 모델을 만든다.
+# 주제: 원본은 BF16 약 44GB라 48GB 이상 GPU가 있어야 돌아간다. 전문가를 칼질하고, 한국어 어휘를 넣고,
+#       한국어로 추가학습하고, 양자화해서 "원본보다 한국어를 잘하면서 작은 GPU에서 빠르게 도는" 모델을 만든다
+#       -> 에너지 절약과 경제성.
 
 model:
   id: baidu/ERNIE-4.5-21B-A3B-PT  # 영어·중국어 모델 (한국어 공식 미지원), BF16 약 44GB
@@ -21,7 +22,7 @@ calibration:                      # 01_calibrate.py : 무엇을 남길지 정하
 
 heldout:                          # 퍼플렉시티용 텍스트 (보정 데이터와 다른 파일)
   ko: {dataset: wikimedia/wikipedia, file: 20231101.ko/train-00002-of-00003.parquet, n_chars: 300000}
-  en: {dataset: wikimedia/wikipedia, file: 20231101.en/train-00040-of-00041.parquet, n_chars: 300000}
+  en: {dataset: wikimedia/wikipedia, file: 20231101.en/train-00040-of-00041.parquet, n_chars: 600000}
 
 pruning:                          # 02_prune.py
   variants:
@@ -32,6 +33,21 @@ pruning:                          # 02_prune.py
 
 reference_quant: Q6_K             # 칼질 비교용 기준 정밀도: 거의 무손실이면서 원본(약 18GB)도 L4에 들어감
 deploy_quant: Q4_K_M              # 경제성 비교용 배포 형식 (원본도 이 형식으로 하나 더 만든다)
+
+vocab:                            # 02b_extend_vocab.py (CPU) + 04_train_lora.py 1단계
+  enabled: true                   # ERNIE는 한글이 어휘에 거의 없어 흔한 글자도 바이트 3개로 쪼갬 -> 한국어 토큰을 덧붙임
+  n_new: 8000                     # 새 토큰 수. 위키 기준 토큰 수 900개 -11%, 4000개 -34%, 8000개 -39%
+  bpe_vocab_size: 16000           # 새 토큰 후보를 뽑을 한국어 BPE 크기 (n_new의 2배 정도)
+  train: {dataset: wikimedia/wikipedia, file: 20231101.ko/train-00000-of-00003.parquet, n_chars: 30000000}
+  stage1:                         # 새 토큰 임베딩만 학습 (모델은 고정)
+    dataset: wikimedia/wikipedia
+    file: 20231101.ko/train-00001-of-00003.parquet   # 보정·BPE(0번 파일), 퍼플렉시티(2번 파일)와 다름
+    n_tokens: 20000000            # 시범 학습으로 잰 속도를 보고 정함
+    seq_len: 1024
+    batch_size: 4
+    grad_accum: 4
+    lr: 1.0e-3
+    save_steps: 200
 
 quantization:                     # 03_make_gguf.py --quant
   base_variant: ko-k32
@@ -49,6 +65,7 @@ lora:                             # 04_train_lora.py
   lora_experts: true              # 남은 전문가 가중치(3D 파라미터)에도 LoRA
   batch_size: 2
   grad_accum: 8
+  save_steps: 50                  # 중간 저장 간격 (드라이브에 저장해 끊겨도 이어서 학습)
   quant_after: [Q6_K, Q4_K_M]     # 합친 뒤 다시 양자화할 형식
 
 eval:                             # 05_eval.py
@@ -58,7 +75,7 @@ eval:                             # 05_eval.py
   prompt_format: chat             # chat(채팅 형식) | plain
   seed: 0
   ppl_ctx: 512
-  ppl_chunks: 200
+  ppl_chunks: -1                  # -1: 텍스트 전체 (어휘가 달라도 같은 글을 읽고 글자당 비트로 비교)
 
 economics:                        # 07_econ.py
   krw_per_usd: 1400

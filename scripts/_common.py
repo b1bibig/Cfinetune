@@ -10,7 +10,7 @@ RESULTS = ROOT / "results"
 
 
 def resolve_model_dir(model: str, local_root: str | Path = "/content/models") -> Path:
-    """로컬 폴더면 그대로, 아니면 허깅페이스에서 받는다 (원본 MXFP4 HF 형식만, original/ metal/ 제외)."""
+    """로컬 폴더면 그대로, 아니면 허깅페이스에서 받는다 (HF 형식 가중치·설정·토크나이저만. gpt-oss의 original/ metal/ 폴더 제외)."""
     p = Path(model)
     if p.exists():
         return p

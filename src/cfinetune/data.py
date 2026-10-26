@@ -55,6 +55,37 @@ def calibration_chunks(sources: list[dict], tokenizer, arch, n_chunks: int, seq_
     return chunks
 
 
+def packed_chunks(src: dict, tokenizer, n_tokens: int, seq_len: int):
+    """위키 문서를 이어 붙여 seq_len 토큰짜리 조각으로 자른다 (어휘 확장 1단계 학습용). 반환: [조각 수, seq_len] int32 텐서."""
+    import torch
+
+    sep = tokenizer("\n\n", add_special_tokens=False).input_ids
+    n = max(n_tokens // seq_len, 1)
+    out = torch.empty((n, seq_len), dtype=torch.int32)
+    buf, k, batch = [], 0, []
+
+    def flush():
+        nonlocal buf, k
+        for ids in tokenizer(batch, add_special_tokens=False).input_ids:
+            buf += ids + sep
+            while len(buf) >= seq_len and k < n:
+                out[k] = torch.tensor(buf[:seq_len], dtype=torch.int32)
+                buf = buf[seq_len:]
+                k += 1
+        batch.clear()
+
+    for text in _wiki_articles(src):
+        batch.append(text)
+        if len(batch) == 256:
+            flush()
+            if k >= n:
+                return out
+    flush()
+    if k < n:
+        raise RuntimeError(f"조각이 부족함: {k}/{n}")
+    return out
+
+
 def heldout_text(src: dict) -> str:
     parts, total = [], 0
     for text in _wiki_articles(src, min_chars=1000):

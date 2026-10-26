@@ -18,32 +18,58 @@ def cheapest_fit(catalog: list[dict], need_gb: float) -> dict | None:
     return min(fits, key=lambda g: g["krw_per_hour"]) if fits else None
 
 
-def variant_economics(bench: dict, catalog: list[dict], measured_gpu: str, overhead_gb: float) -> dict:
-    """한 변형의 경제성 지표.
+def gpu_label(nvidia_name: str, catalog: list[dict]) -> str:
+    """nvidia-smi 이름 -> config의 GPU 이름 (예: 'NVIDIA A100-SXM4-80GB' -> 'A100-80GB (Colab)'). 없으면 그대로."""
+    n = nvidia_name.upper()
+    key = ("T4" if "T4" in n else "L4" if "L4" in n else
+           ("A100-80GB" if "80GB" in n else "A100-40GB") if "A100" in n else
+           "H100-80GB" if "H100" in n else "B200" if "B200" in n else None)
+    hits = [g["name"] for g in catalog if key and g["name"].startswith(key)]
+    colab = [h for h in hits if "Colab" in h]
+    return (colab or hits or [nvidia_name])[0]
+
+
+def gpu_tag(label: str) -> str:
+    """파일 이름용 짧은 이름: 'A100-80GB (Colab)' -> 'A100-80GB'."""
+    return label.split(" (")[0].replace(" ", "_")
+
+
+def variant_economics(bench: dict, catalog: list[dict], gpu: str, overhead_gb: float,
+                      ko_tok_per_char: float | None = None) -> dict:
+    """한 변형을 한 GPU에서 잰 결과의 경제성 지표.
 
     - 1000토큰 생성 에너지(Wh) = 생성 중 평균 전력(W) / 생성 속도(토큰/s) * 1000 / 3600
     - 100만 토큰 비용(원)   = GPU 시간당 가격 / (생성 속도 * 3600) * 1e6   (요청 1개씩 처리하는 보수적 기준)
+    - 한국어 글자 기준       = 위 식에서 토큰/s 대신 글자/s (= 토큰/s / 글자당 토큰). 어휘가 다른 모델끼리 공정한 비교
     - 최소 GPU            = (모델 파일 + 여유분)이 들어가는 가장 싼 GPU
     """
     tg, w = bench["tg_tps"], bench["tg_power_w"]
-    j_per_tok = w / tg
-    measured = next((g for g in catalog if g["name"] == measured_gpu), None)
+    measured = next((g for g in catalog if g["name"] == gpu), None)
     need = bench["file_gb"] + overhead_gb
     fit = cheapest_fit(catalog, need)
     out = {
+        "gpu": gpu,
         "file_gb": round(bench["file_gb"], 2),
         "need_vram_gb": round(need, 1),
         "peak_vram_gb": round(bench.get("peak_vram_gb", 0), 1),
         "pp_tps": round(bench["pp_tps"], 1),
         "tg_tps": round(tg, 1),
         "tg_power_w": round(w, 1),
-        "wh_per_1k_tok": round(j_per_tok * 1000 / 3600, 4),
+        "wh_per_1k_tok": round(w / tg * 1000 / 3600, 4),
         "wh_per_1k_tok_above_idle": round(max(w - bench["idle_w"], 0) / tg * 1000 / 3600, 4),
         "cheapest_gpu": fit["name"] if fit else "없음",
         "cheapest_gpu_krw_per_hour": round(fit["krw_per_hour"]) if fit else None,
     }
     if measured:
-        out["krw_per_1m_tok_measured_gpu"] = round(measured["krw_per_hour"] / (tg * 3600) * 1e6, 1)
+        out["gpu_krw_per_hour"] = round(measured["krw_per_hour"])
+        out["krw_per_1m_tok"] = round(measured["krw_per_hour"] / (tg * 3600) * 1e6, 1)
+    if ko_tok_per_char:
+        cps = tg / ko_tok_per_char
+        out["ko_tok_per_char"] = round(ko_tok_per_char, 4)
+        out["ko_chars_per_s"] = round(cps, 1)
+        out["wh_per_1k_ko_chars"] = round(w / cps * 1000 / 3600, 4)
+        if measured:
+            out["krw_per_1m_ko_chars"] = round(measured["krw_per_hour"] / (cps * 3600) * 1e6, 1)
     return out
 
 
@@ -61,7 +87,7 @@ FLASH_NEXT = {
 
 def flash_next_memory(keep_ratio: float, expert_bits: float = 4.25, other_bits: float = 8.5,
                       ngram_bits: float = 4.5, ngram_on_cpu: bool = True, drop_mtp: bool = True) -> dict:
-    """gpt-oss에서 측정한 프루닝 비율을 Flash-Next에 적용했을 때 필요한 GPU 메모리(GB) 추정."""
+    """ERNIE에서 측정한 프루닝 비율(남긴 전문가 비율)을 Flash-Next에 적용했을 때 필요한 GPU 메모리(GB) 추정."""
     f = FLASH_NEXT
     gb = lambda p, b: p * b / 8 / 1e9  # noqa: E731
     experts = gb(f["routed_expert_params"] * keep_ratio, expert_bits)

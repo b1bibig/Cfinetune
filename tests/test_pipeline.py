@@ -151,7 +151,7 @@ def test_lora_train_merge_reload(kind, tiny_dirs, tmp_path):
     model.eval()
     with torch.no_grad():
         peft_logits = model(input_ids=ids).logits
-    m.save_merged(model, tok, src, tmp_path / "merged")
+    m.save_merged(model, src, tmp_path / "merged")
     assert "quantization_config" not in json.loads((tmp_path / "merged" / "config.json").read_text())
     merged = _load(tmp_path / "merged")
     with torch.no_grad():
@@ -187,17 +187,21 @@ def test_prompts_match_chat_templates():
 
 def test_econ_and_flash_next():
     from cfinetune import load_config
-    from cfinetune.econ import cheapest_fit, flash_next_memory, gpu_catalog, variant_economics
+    from cfinetune.econ import cheapest_fit, flash_next_memory, gpu_catalog, gpu_label, gpu_tag, variant_economics
 
     cfg = load_config()
     cat = gpu_catalog(cfg)
     assert cheapest_fit(cat, 10)["name"] == "T4 (Colab)"
     assert cheapest_fit(cat, 30)["vram_gb"] >= 30
     bench = {"tg_tps": 50.0, "tg_power_w": 70.0, "idle_w": 20.0, "pp_tps": 1000.0, "file_gb": 7.0, "peak_vram_gb": 8}
-    r = variant_economics(bench, cat, "L4 (Colab)", 1.5)
+    r = variant_economics(bench, cat, "L4 (Colab)", 1.5, ko_tok_per_char=0.5)
     assert abs(r["wh_per_1k_tok"] - 70 / 50 * 1000 / 3600) < 1e-3
     l4 = next(g for g in cat if g["name"] == "L4 (Colab)")
-    assert abs(r["krw_per_1m_tok_measured_gpu"] - l4["krw_per_hour"] / (50 * 3600) * 1e6) < 0.1
+    assert abs(r["krw_per_1m_tok"] - l4["krw_per_hour"] / (50 * 3600) * 1e6) < 0.1
+    # 글자당 토큰 0.5 -> 초당 글자 100, 글자 기준 에너지·비용은 토큰 기준의 절반
+    assert r["ko_chars_per_s"] == 100 and abs(r["wh_per_1k_ko_chars"] - r["wh_per_1k_tok"] / 2) < 1e-3
+    assert gpu_label("NVIDIA A100-SXM4-80GB", cat) == "A100-80GB (Colab)" and gpu_label("Tesla T4", cat) == "T4 (Colab)"
+    assert gpu_label("NVIDIA L4", cat) == "L4 (Colab)" and gpu_tag("A100-80GB (Colab)") == "A100-80GB"
     full, half = flash_next_memory(1.0), flash_next_memory(0.5)
     assert full["keep_experts"] == 512 and half["keep_experts"] == 256
     assert 30 < half["gpu_gb"] < 40 < full["gpu_gb"]
