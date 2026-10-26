@@ -135,8 +135,23 @@ def main():
                         "한국어 점수 (원본 대비 %p)": round(q_row["ko_avg"] - base["ko_avg"], 1)
                         if "ko_avg" in q_row and "ko_avg" in base else ""})
 
+    # 한 줄 결론: 최종 모델(작은 GPU 중 가장 싼 측정) vs 원본 BF16
+    verdict = []
+    fin = sorted((r for r in head if r["variant"] == final), key=lambda r: r.get("gpu_krw_per_hour", 1e9))
+    if fin and orig:
+        f = fin[0]
+        if "ko_avg" in f and "ko_avg" in orig:
+            verdict.append(f"한국어 점수 {orig['ko_avg']} -> {f['ko_avg']} ({f['ko_avg'] - orig['ko_avg']:+.1f}%p)")
+        if f.get("ko_chars_per_s") and orig.get("ko_chars_per_s"):
+            verdict.append(f"한국어 생성 속도 {f['ko_chars_per_s'] / orig['ko_chars_per_s']:.1f}배")
+        for k, label in (("size_vs_orig_%", "크기"), ("energy_vs_orig_%", "1000글자당 에너지"),
+                         ("cost_vs_orig_%", "100만 글자당 비용")):
+            if k in f:
+                verdict.append(f"{label} {f[k]:.0f}%")
+        verdict = [f"**최종 모델({f['gpu']}) vs 원본 BF16({orig['gpu']})**: " + ", ".join(verdict), ""]
+
     vocab = load_dir("vocab")
-    md = ["# 결과 요약", "", f"최종 모델: `{final}` / 한국어 성능 기준: `{args.baseline}`", "",
+    md = ["# 결과 요약", "", *verdict, f"최종 모델: `{final}` / 한국어 성능 기준: `{args.baseline}`", "",
           "## 원본 vs 최종", "",
           "속도·에너지·비용은 **한국어 글자** 기준 (어휘를 늘린 모델은 같은 글을 더 적은 토큰으로 처리). "
           "`*_vs_orig_%`는 원본 BF16 대비 비율.", "",
