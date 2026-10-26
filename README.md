@@ -19,6 +19,8 @@
 | `notebooks/04_small_gpu.ipynb` | T4, L4 | 최종 모델을 작은 GPU에서 속도·전력 측정 |
 | `notebooks/05_report.ipynb` | CPU | 경제성 보고서 |
 
+| (선택) [`docs/pc.md`](docs/pc.md) | 내 PC (예: RTX 3070 8GB) | 가정용 GPU에서 원본 vs 최종 측정 |
+
 결과는 구글 드라이브 `MyDrive/cfinetune/results/`에 저장된다. 03의 학습 중간 저장도 드라이브(`cfinetune/ckpt/`)에 해서 끊겨도 이어서 학습한다.
 
 ## 로컬 테스트

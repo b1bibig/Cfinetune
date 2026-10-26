@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import subprocess
 import threading
@@ -19,10 +20,15 @@ import requests
 from .prompts import chat_prompt, mcq_prompt
 
 
+def _bin(bin_dir: str | Path, name: str) -> str:
+    """llama.cpp 실행 파일 경로 (윈도우는 .exe)."""
+    return str(Path(bin_dir) / (name + (".exe" if os.name == "nt" else "")))
+
+
 class LlamaServer:
     def __init__(self, bin_dir: str | Path, model: str | Path, port: int = 8090, ngl: int = 99,
                  parallel: int = 4, ctx_per_slot: int = 4096, log: str | Path | None = None, extra=()):
-        self.cmd = [str(Path(bin_dir) / "llama-server"), "-m", str(model), "--port", str(port),
+        self.cmd = [_bin(bin_dir, "llama-server"), "-m", str(model), "--port", str(port),
                     "-ngl", str(ngl), "-np", str(parallel), "-c", str(ctx_per_slot * parallel), *extra]
         self.url = f"http://127.0.0.1:{port}"
         self.parallel = parallel
@@ -139,7 +145,7 @@ def generate(server: LlamaServer, tokenizer, arch, prompts: list[str], n_predict
 
 def perplexity(bin_dir: str | Path, model: str | Path, text_file: str | Path, ctx: int = 512,
                chunks: int = 200, ngl: int = 99) -> dict:
-    cmd = [str(Path(bin_dir) / "llama-perplexity"), "-m", str(model), "-f", str(text_file),
+    cmd = [_bin(bin_dir, "llama-perplexity"), "-m", str(model), "-f", str(text_file),
            "-c", str(ctx), "--chunks", str(chunks), "-ngl", str(ngl)]
     p = subprocess.run(cmd, capture_output=True, text=True)
     m = re.search(r"Final estimate: PPL = ([\d.]+) \+/- ([\d.]+)", p.stdout + p.stderr)
@@ -245,10 +251,13 @@ def idle_power(seconds: float = 5) -> float:
 
 def llama_bench(bin_dir: str | Path, model: str | Path, n_prompt: int = 512, n_gen: int = 128,
                 reps: int = 10, ngl: int = 99) -> dict:
-    """프롬프트 처리(pp)와 생성(tg)을 따로 재서 각각의 속도와 전력을 얻는다."""
-    out = {"gpu": gpu_name(), "idle_w": idle_power(), "file_gb": Path(model).stat().st_size / 1e9}
+    """프롬프트 처리(pp)와 생성(tg)을 따로 재서 각각의 속도와 전력을 얻는다.
+
+    ngl: GPU에 올릴 층 수. VRAM에 다 안 들어가는 모델은 낮춰서 나머지를 CPU로 돌린다 (전력은 GPU만 잼).
+    """
+    out = {"gpu": gpu_name(), "idle_w": idle_power(), "file_gb": Path(model).stat().st_size / 1e9, "ngl": ngl}
     for name, p, n in (("pp", n_prompt, 0), ("tg", 0, n_gen)):
-        cmd = [str(Path(bin_dir) / "llama-bench"), "-m", str(model), "-ngl", str(ngl),
+        cmd = [_bin(bin_dir, "llama-bench"), "-m", str(model), "-ngl", str(ngl),
                "-p", str(p), "-n", str(n), "-r", str(reps), "-o", "json"]
         with PowerSampler() as s:
             proc = subprocess.run(cmd, capture_output=True, text=True)

@@ -31,6 +31,9 @@ pruning:                          # 02_prune.py
     # - {name: ko-k24, calib: ko, criterion: reap, keep: 24} # 62.5% (여유 있으면)
     # - {name: en-k32, calib: en, criterion: reap, keep: 32} # 영어 기준 칼질 비교 (여유 있으면)
 
+pc:                               # 내 PC(가정용 GPU)에서도 재기: docs/pc.md
+  copy_original: Q4_K_M           # 02에서 원본을 이 형식으로 드라이브에 남김 (약 13GB, PC로 받은 뒤 지우기). 안 하려면 null
+
 reference_quant: Q6_K             # 칼질 비교용 기준 정밀도: 거의 무손실이면서 원본(약 18GB)도 L4에 들어감
 deploy_quant: Q4_K_M              # 경제성 비교용 배포 형식 (원본도 이 형식으로 하나 더 만든다)
 
@@ -66,7 +69,8 @@ lora:                             # 04_train_lora.py
   batch_size: 2
   grad_accum: 8
   save_steps: 50                  # 중간 저장 간격 (드라이브에 저장해 끊겨도 이어서 학습)
-  quant_after: [Q6_K, Q4_K_M]     # 합친 뒤 다시 양자화할 형식
+  quant_after: [Q6_K, Q4_K_M, Q3_K_M]   # 합친 뒤 다시 양자화할 형식 (Q3_K_M은 8GB 가정용 GPU에 여유 있게 들어감)
+  to_drive: [Q4_K_M, Q3_K_M]      # 작은 GPU·내 PC에서 측정하려고 드라이브에 복사할 형식
 
 eval:                             # 05_eval.py
   kmmlu_per_subject: 20           # 45과목 x 20 = 900문항

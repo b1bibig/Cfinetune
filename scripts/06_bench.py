@@ -29,17 +29,18 @@ def main():
     ap.add_argument("--bin-dir", default="/content/llama.cpp/build/bin")
     ap.add_argument("--reps", type=int, default=10)
     ap.add_argument("--skip-answers", action="store_true")
+    ap.add_argument("--ngl", type=int, default=99, help="GPU에 올릴 층 수 (VRAM에 다 안 들어가면 낮춤, 예: 원본을 8GB GPU에서)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    r = llama_bench(args.bin_dir, args.gguf, reps=args.reps)
+    r = llama_bench(args.bin_dir, args.gguf, reps=args.reps, ngl=args.ngl)
     r["name"] = args.name
     r["gpu_label"] = gpu_label(r["gpu"], gpu_catalog(cfg))
     if not args.skip_answers:
         arch = arch_of(AutoConfig.from_pretrained(cfg["model"]["id"]))
         (RESULTS / "cache").mkdir(parents=True, exist_ok=True)
         prompts = [l.strip() for l in (ROOT / "configs" / "gen_prompts.txt").read_text(encoding="utf-8").splitlines() if l.strip()]
-        with LlamaServer(args.bin_dir, args.gguf, parallel=1, log=RESULTS / "cache" / f"bench-server-{args.name}.log") as srv:
+        with LlamaServer(args.bin_dir, args.gguf, ngl=args.ngl, parallel=1, log=RESULTS / "cache" / f"bench-server-{args.name}.log") as srv:
             r["loaded_idle_w"] = idle_power(10)  # 모델을 올려 둔 채 대기
             r["answer"] = answer_energy(srv, arch, prompts)
         a = r["answer"]
@@ -47,8 +48,9 @@ def main():
               f"초당 {a['chars_per_s']:.1f}글자, 평균 {a['mean_w']:.0f} W, 대기 {r['loaded_idle_w']:.0f} W")
     dst = RESULTS / "bench" / f"{args.name}@{gpu_tag(r['gpu_label'])}.json"
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(json.dumps(r, ensure_ascii=False, indent=1))
-    print(json.dumps(r, ensure_ascii=False, indent=1))
+    dst.write_text(json.dumps(r, ensure_ascii=False, indent=1), encoding="utf-8")
+    brief = {k: v for k, v in r.items() if k != "answer"}
+    print(json.dumps(brief, ensure_ascii=False, indent=1))
     print(f"저장: {dst}")
 
 

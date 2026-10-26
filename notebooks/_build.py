@@ -161,6 +161,9 @@ def run_variant(hf_dir, stem, quants):
         g = f"{GGUF}/{stem}-{q}.gguf"
         !python scripts/05_eval.py --gguf {g} --name {stem}-{q}
         !python scripts/06_bench.py --gguf {g} --name {stem}-{q}
+        if stem == "original" and q == cfg["pc"]["copy_original"]:   # 내 PC 측정용 (docs/pc.md)
+            os.makedirs(f"{DRIVE}/gguf", exist_ok=True)
+            shutil.copy(g, f"{DRIVE}/gguf/")
         os.remove(g)
         push_results()'''),
     md("## 기준: 원본"),
@@ -187,10 +190,10 @@ write("03_lora.ipynb", notebook([
 1. **어휘 확장 (CPU, 수 분)**: 한국어 BPE를 학습해 한국어 토큰 `vocab.n_new`개를 덧붙입니다. 같은 한국어를 약 40% 적은 토큰으로 처리합니다.
 2. **1단계 학습**: 모델은 고정하고 새 토큰 임베딩만 한국어 위키로 학습합니다.
 3. **2단계 학습**: 한국어 지시문(KULLM-v2 6천 개)으로 LoRA (어텐션 + 공유 전문가 + 남은 전문가, 라우터 고정) + 새 토큰 임베딩.
-4. 합쳐서 GGUF(Q6_K, Q4_K_M)로 만들고 바로 평가합니다. 배포 형식(Q4_K_M)은 드라이브에 저장해 04 노트북에서 작은 GPU로 잽니다.
+4. 합쳐서 GGUF(Q6_K, Q4_K_M, Q3_K_M)로 만들고 바로 평가합니다. Q4_K_M·Q3_K_M은 드라이브에 저장해 04 노트북(T4·L4)과 내 PC에서 잽니다.
 
 학습 중간 저장은 드라이브(`cfinetune/ckpt/`)에 하므로, 세션이 끊기면 **처음부터 다시 실행**하면 이어서 학습합니다.
-드라이브에 약 12GB 여유가 필요합니다.
+드라이브에 약 15GB 여유가 필요합니다 (학습 중간 저장 + 최종 모델 Q4_K_M·Q3_K_M).
 """),
     code(SETUP),
     code(DRIVE),
@@ -245,11 +248,12 @@ if todo:
         g = f"/content/gguf/{NAME}-{q}.gguf"
         !python scripts/05_eval.py --gguf {g} --name {NAME}-{q} --tokenizer {OUT}/merged
         push_results()
-g = f"/content/gguf/{NAME}-{DEPLOY}.gguf"
-if os.path.exists(g):
-    os.makedirs(f"{DRIVE}/gguf", exist_ok=True)
-    shutil.copy(g, f"{DRIVE}/gguf/")   # 04 노트북(작은 GPU 측정)용
-    print("드라이브에 저장:", f"{DRIVE}/gguf/{NAME}-{DEPLOY}.gguf")'''),
+os.makedirs(f"{DRIVE}/gguf", exist_ok=True)
+for q in cfg["lora"]["to_drive"]:   # 04 노트북(작은 GPU)과 내 PC 측정용
+    g = f"/content/gguf/{NAME}-{q}.gguf"
+    if os.path.exists(g) and not os.path.exists(f"{DRIVE}/gguf/{NAME}-{q}.gguf"):
+        shutil.copy(g, f"{DRIVE}/gguf/")
+        print("드라이브에 저장:", f"{DRIVE}/gguf/{NAME}-{q}.gguf")'''),
     md("끝나면 **런타임 → 런타임 연결 해제 및 삭제**를 눌러 유닛이 계속 나가지 않게 하세요."),
 ], gpu="A100"))
 

@@ -112,7 +112,8 @@ def main():
     head_cols = ["variant", "gpu", "file_gb", "cheapest_gpu", "ko_avg", "kmmlu_acc", "haerae_acc", "bpc_ko",
                  "ko_chars_per_s", "tg_power_w", "wh_per_1k_ko_chars", "krw_per_1m_ko_chars",
                  "size_vs_orig_%", "energy_vs_orig_%", "cost_vs_orig_%"]
-    head = [r for r in rows if "tg_tps" in r and (r["variant"].startswith("original") or r["variant"] == final)]
+    final_stem = final[: -len(deploy_q)]
+    head = [r for r in rows if "tg_tps" in r and (r["variant"].startswith("original") or r["variant"].startswith(final_stem))]
     main_cols = [c for c in ["variant", "gpu", "kmmlu_acc", "haerae_acc", "mmlu_acc", "ko_avg", "ko_vs_base_%p",
                              "bpc_ko", "bpc_en", "file_gb", "tg_tps", "ko_chars_per_s", "tg_power_w",
                              "wh_per_1k_ko_chars", "krw_per_1m_ko_chars", "cheapest_gpu", "quality_from"] if c in cols]
