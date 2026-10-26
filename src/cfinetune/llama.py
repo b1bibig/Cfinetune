@@ -50,6 +50,13 @@ class LlamaServer:
             self.proc.kill()
         self.log.close()
 
+    def complete_text(self, prompt: str, **kw) -> dict:
+        """문자열 프롬프트 (특수 토큰 문자열도 llama.cpp가 특수 토큰으로 읽음)."""
+        payload = {"prompt": prompt, "temperature": 0, "cache_prompt": False, **kw}
+        r = requests.post(self.url + "/completion", json=payload, timeout=900)
+        r.raise_for_status()
+        return r.json()
+
     def complete(self, prompt_ids: list[int], **kw) -> dict:
         payload = {"prompt": prompt_ids, "temperature": 0, "cache_prompt": True, **kw}
         r = requests.post(self.url + "/completion", json=payload, timeout=900)
@@ -186,6 +193,42 @@ class PowerSampler:
     @property
     def peak_mem_mib(self) -> float:
         return max((s[1] for s in self.samples), default=0.0)
+
+
+def gpu_energy_j() -> float | None:
+    """GPU 자체 에너지 계량기(드라이버 시작 후 누적, Volta 이후 GPU: T4·L4·A100 등). 지원 안 하면 None."""
+    p = subprocess.run(["nvidia-smi", "--query-gpu=total_energy_consumption", "--format=csv,noheader,nounits", "-i", "0"],
+                       capture_output=True, text=True)
+    try:
+        return float(p.stdout.strip()) / 1000  # mJ -> J
+    except ValueError:
+        return None
+
+
+def answer_energy(server: "LlamaServer", arch, prompts: list[str], n_predict: int = 512) -> dict:
+    """질문에 실제로 답하는 에너지: 질문을 하나씩(사용자 1명 기준) 보내고 GPU 에너지 계량기로 잰다.
+
+    프롬프트는 문자열로 보내서 llama.cpp가 직접 토큰으로 자른다 (어휘가 다른 모델도 같은 방식).
+    프롬프트 처리 + 답변 생성 전체를 포함한다. 계량기가 없으면 0.2초 간격 전력 기록을 적분한다.
+    """
+    server.complete_text(arch.chat_prefix("안녕하세요?"), n_predict=8)  # 예열 (측정 제외)
+    texts, n_tok, n_prompt = [], 0, 0
+    e0 = gpu_energy_j()
+    with PowerSampler() as ps:
+        t0 = time.time()
+        for p in prompts:
+            r = server.complete_text(arch.chat_prefix(p), n_predict=n_predict, stop=[arch.END])
+            texts.append(r["content"])
+            n_tok += r.get("tokens_predicted", 0)
+            n_prompt += r.get("tokens_evaluated", 0)
+        sec = time.time() - t0
+    e1 = gpu_energy_j()
+    joule = e1 - e0 if e0 is not None and e1 is not None else ps.mean_w * sec
+    chars = sum(len(t) for t in texts)
+    return {"n_answers": len(prompts), "seconds": sec, "joule": joule, "energy_source": "counter" if e0 is not None else "power",
+            "mean_w": joule / sec, "gen_chars": chars, "gen_tokens": n_tok, "prompt_tokens": n_prompt,
+            "wh_per_answer": joule / 3600 / len(prompts), "wh_per_1k_chars": joule / 3600 / max(chars, 1) * 1000,
+            "chars_per_s": chars / sec, "answers": texts}
 
 
 def gpu_name() -> str:

@@ -14,7 +14,7 @@ import re
 
 from _common import RESULTS, load_config
 
-from cfinetune.econ import flash_next_memory, gpu_catalog, gpu_label, to_markdown, variant_economics
+from cfinetune.econ import flash_next_memory, gpu_catalog, gpu_label, service_day, to_markdown, variant_economics
 
 QUANT = re.compile(r"-((?:BF|F)16|Q\d\w*)$")
 
@@ -84,6 +84,10 @@ def main():
             rows.append({"variant": name, "gpu": "-", "file_gb": round(evals[name]["file_gb"], 2),
                          **quality(evals, name, ref_q)})
     rows.sort(key=lambda r: (not r["variant"].startswith("original"), r["variant"], r.get("gpu", "")))
+    benched_rows = [r for r in rows if "tg_tps" in r]
+    basis = "answer" if benched_rows and all("answer_wh" in r for r in benched_rows) else "bench"
+    for r in benched_rows:
+        r.update(service_day(r, cfg["economics"], basis))
 
     base = quality(evals, args.baseline, ref_q)
     orig = next((r for r in rows if r["variant"] == "original-BF16" and "tg_tps" in r), None)
@@ -92,7 +96,8 @@ def main():
             r["ko_vs_base_%p"] = round(r["ko_avg"] - base["ko_avg"], 1)
         if orig:
             for k, out in (("file_gb", "size_vs_orig_%"), ("wh_per_1k_ko_chars", "energy_vs_orig_%"),
-                           ("krw_per_1m_ko_chars", "cost_vs_orig_%")):
+                           ("krw_per_1m_ko_chars", "cost_vs_orig_%"), ("answer_wh", "answer_energy_vs_orig_%"),
+                           ("kwh_per_day", "day_energy_vs_orig_%")):
                 if k in r and orig.get(k):
                     r[out] = round(r[k] / orig[k] * 100, 1)
 
@@ -144,7 +149,8 @@ def main():
             verdict.append(f"한국어 점수 {orig['ko_avg']} -> {f['ko_avg']} ({f['ko_avg'] - orig['ko_avg']:+.1f}%p)")
         if f.get("ko_chars_per_s") and orig.get("ko_chars_per_s"):
             verdict.append(f"한국어 생성 속도 {f['ko_chars_per_s'] / orig['ko_chars_per_s']:.1f}배")
-        for k, label in (("size_vs_orig_%", "크기"), ("energy_vs_orig_%", "1000글자당 에너지"),
+        for k, label in (("size_vs_orig_%", "크기"), ("answer_energy_vs_orig_%", "답변 1개당 에너지"),
+                         ("energy_vs_orig_%", "1000글자당 생성 에너지"), ("day_energy_vs_orig_%", "하루 운영 전력"),
                          ("cost_vs_orig_%", "100만 글자당 비용")):
             if k in f:
                 verdict.append(f"{label} {f[k]:.0f}%")
@@ -160,6 +166,19 @@ def main():
         ko = v["tok_per_char"]["ko"]
         md += [f"어휘 확장 `{n}`: 새 토큰 {v['n_new']}개, 한국어 글자당 토큰 {ko['before']} -> {ko['after']} "
                f"({(ko['after'] / ko['before'] - 1) * 100:+.0f}%)", ""]
+    e = cfg["economics"]
+    energy_cols = ["variant", "gpu", "answer_wh", "answer_wh_per_1k_chars", "answer_mean_w", "wh_per_1k_ko_chars", "idle_w",
+                   "n_gpu", "busy_h_per_day", "kwh_per_day", "kwh_per_day_idle", "kwh_per_year", "krw_elec_per_year",
+                   "kg_co2_per_year", "krw_gpu_rent_per_day", "answer_energy_vs_orig_%", "day_energy_vs_orig_%"]
+    md += ["## 에너지", "",
+           "- `answer_wh`: 한국어 질문 8개에 차례로 답할 때 GPU 에너지 계량기로 잰 답변 1개당 에너지 (프롬프트 처리 + 생성)",
+           "- `wh_per_1k_ko_chars`: llama-bench 생성 속도·전력으로 계산한 한국어 1000글자 생성 에너지",
+           "- `idle_w`: 모델을 올려 둔 채 쉬는 GPU의 전력. 큰 GPU는 일을 안 해도 전기를 많이 먹는다",
+           f"- 하루 운영: 하루 한국어 {e['service']['ko_chars_per_day']:,}글자를 생성하는 챗봇을 24시간 켜 둠 "
+           f"(기준: {'실제 답변 측정' if basis == 'answer' else 'llama-bench'}). "
+           f"전기 {e['krw_per_kwh']}원/kWh, 배출계수 {e['kg_co2_per_kwh']} kgCO2/kWh", "",
+           to_markdown(benched_rows, [c for c in energy_cols if any(c in r for r in benched_rows)])
+           if benched_rows else "(측정 결과 없음)", ""]
     md += ["## 전체 결과", "", to_markdown(rows, main_cols), "", "## Qwen3.8-Flash-Next 확장 계산", "",
            "전문가 MXFP4(4.25비트), 나머지 8.5비트, n-gram 임베딩은 CPU 메모리, MTP 제외 가정.", "",
            to_markdown(fn_rows, list(fn_rows[0])) if fn_rows else "(프루닝 결과 없음)"]
@@ -182,12 +201,24 @@ def main():
             fig.savefig(RESULTS / "fig_size_vs_korean.png", dpi=150)
         pts = [r for r in rows if "wh_per_1k_ko_chars" in r]
         if pts:
+            key = "answer_wh" if all("answer_wh" in r for r in pts) else "wh_per_1k_ko_chars"
             fig, ax = plt.subplots(figsize=(7, 4))
-            ax.bar([f"{r['variant']}\n{r['gpu']}" for r in pts], [r["wh_per_1k_ko_chars"] for r in pts])
-            ax.set_ylabel("Wh per 1k generated Korean characters")
+            ax.bar([f"{r['variant']}\n{r['gpu']}" for r in pts], [r[key] for r in pts])
+            ax.set_ylabel("Wh per answer" if key == "answer_wh" else "Wh per 1k generated Korean characters")
             ax.tick_params(axis="x", rotation=45, labelsize=6)
             fig.tight_layout()
             fig.savefig(RESULTS / "fig_energy.png", dpi=150)
+        pts = [r for r in rows if "kwh_per_day" in r]
+        if pts:
+            fig, ax = plt.subplots(figsize=(7, 4))
+            labels = [f"{r['variant']}\n{r['gpu']}" for r in pts]
+            ax.bar(labels, [r["kwh_per_day_active"] for r in pts], label="generating")
+            ax.bar(labels, [r["kwh_per_day_idle"] for r in pts], bottom=[r["kwh_per_day_active"] for r in pts], label="idle")
+            ax.set_ylabel("kWh per day (service scenario)")
+            ax.legend()
+            ax.tick_params(axis="x", rotation=45, labelsize=6)
+            fig.tight_layout()
+            fig.savefig(RESULTS / "fig_energy_per_day.png", dpi=150)
     except ImportError:
         pass
 

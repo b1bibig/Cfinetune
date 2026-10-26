@@ -285,6 +285,6 @@ write("05_report.ipynb", notebook([
 push_results()
 from IPython.display import Markdown, Image, display
 display(Markdown(open("results/report.md").read()))
-for f in ("fig_size_vs_korean.png", "fig_energy.png", "fig_korean_expert_share.png"):
+for f in ("fig_size_vs_korean.png", "fig_energy.png", "fig_energy_per_day.png", "fig_korean_expert_share.png"):
     if os.path.exists(f"results/{f}"): display(Image(f"results/{f}"))'''),
 ]))

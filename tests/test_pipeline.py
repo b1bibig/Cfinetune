@@ -223,3 +223,39 @@ def test_gguf_conversion_and_quantization(tiny_dirs, tmp_path):
         r = GGUFReader(tmp_path / "g" / f"t-{q}.gguf")
         f = r.fields["ernie4_5-moe.expert_count"]
         assert int(f.parts[f.data[0]][0]) == 6
+
+
+def test_answer_energy_and_service_day(monkeypatch):
+    """답변 에너지(계량기 차이)와 하루 운영 시나리오 계산."""
+    import contextlib
+
+    from cfinetune import llama, load_config
+    from cfinetune.arch import ErnieMoe
+    from cfinetune.econ import gpu_catalog, service_day, variant_economics
+
+    meter = iter([1000.0, 1000.0 + 3600.0 * 2])  # 2 Wh 사용 (J)
+    monkeypatch.setattr(llama, "gpu_energy_j", lambda: next(meter))
+    monkeypatch.setattr(llama, "PowerSampler", lambda: contextlib.nullcontext(type("P", (), {"mean_w": 0})()))
+    sent = []
+
+    class FakeServer:
+        def complete_text(self, prompt, **kw):
+            sent.append(prompt)
+            return {"content": "가" * 250, "tokens_predicted": 100, "tokens_evaluated": 30}
+
+    a = llama.answer_energy(FakeServer(), ErnieMoe, ["질문1", "질문2"])
+    assert sent[1] == ErnieMoe.chat_prefix("질문1") and a["energy_source"] == "counter"
+    assert a["gen_chars"] == 500 and abs(a["wh_per_answer"] - 1.0) < 1e-9 and abs(a["wh_per_1k_chars"] - 4.0) < 1e-9
+
+    cfg = load_config()
+    cat = gpu_catalog(cfg)
+    bench = {"tg_tps": 50.0, "tg_power_w": 70.0, "idle_w": 20.0, "loaded_idle_w": 25.0, "pp_tps": 1000.0, "file_gb": 7.0,
+             "answer": {"wh_per_answer": 0.5, "wh_per_1k_chars": 0.2, "chars_per_s": 100.0, "mean_w": 72.0}}
+    row = variant_economics(bench, cat, "L4 (Colab)", 1.5, ko_tok_per_char=0.5)
+    assert row["idle_w"] == 25.0 and row["answer_wh"] == 0.5
+    econ = {**cfg["economics"], "service": {"ko_chars_per_day": 3_600_000}}
+    d = service_day(row, econ)  # 360만 글자 / 초당 100글자 = 10시간 일함, 14시간 대기
+    assert d["n_gpu"] == 1 and d["busy_h_per_day"] == 10
+    assert abs(d["kwh_per_day"] - (0.2 / 1000 * 3_600_000 / 1000 + 25 * 14 / 1000)) < 1e-3
+    assert abs(d["kg_co2_per_year"] - d["kwh_per_year"] * econ["kg_co2_per_kwh"]) < 1
+    assert service_day(row, {**econ, "service": {"ko_chars_per_day": 36_000_000}})["n_gpu"] == 5  # 100시간 -> 5장

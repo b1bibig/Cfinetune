@@ -81,6 +81,10 @@ economics:                        # 07_econ.py
   krw_per_usd: 1400
   colab_usd_per_cu: 0.10
   vram_overhead_gb: 1.5           # KV 캐시 + 런타임 여유분
+  krw_per_kwh: 181.9              # 2025년 산업용 전기 평균 판매단가 (증권사 보고서 인용, 한전 전력통계월보로 확인 가능)
+  kg_co2_per_kwh: 0.4173          # 2023년도 국가 전력배출계수, 소비단 (기후에너지환경부 2025-12 공표, tCO2eq/MWh)
+  service:                        # 하루 운영 시나리오: 한국어 챗봇을 GPU 한 장(또는 필요한 만큼)으로 24시간 켜 둠
+    ko_chars_per_day: 3000000     # 하루에 생성하는 한국어 글자 수 (답변 500자 x 6천 건 정도)
   gpus:                           # 가격은 2026년 확인 값. cu_per_hour는 코랩 유닛, krw_per_hour는 원화
     T4 (Colab):         {vram_gb: 15,   cu_per_hour: 1.19}
     L4 (Colab):         {vram_gb: 22.5, cu_per_hour: 1.71}

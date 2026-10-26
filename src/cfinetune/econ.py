@@ -63,6 +63,12 @@ def variant_economics(bench: dict, catalog: list[dict], gpu: str, overhead_gb: f
     if measured:
         out["gpu_krw_per_hour"] = round(measured["krw_per_hour"])
         out["krw_per_1m_tok"] = round(measured["krw_per_hour"] / (tg * 3600) * 1e6, 1)
+    out["idle_w"] = round(bench.get("loaded_idle_w", bench["idle_w"]), 1)
+    if a := bench.get("answer"):
+        out["answer_wh"] = round(a["wh_per_answer"], 4)
+        out["answer_wh_per_1k_chars"] = round(a["wh_per_1k_chars"], 4)
+        out["answer_chars_per_s"] = round(a["chars_per_s"], 1)
+        out["answer_mean_w"] = round(a["mean_w"], 1)
     if ko_tok_per_char:
         cps = tg / ko_tok_per_char
         out["ko_tok_per_char"] = round(ko_tok_per_char, 4)
@@ -70,6 +76,36 @@ def variant_economics(bench: dict, catalog: list[dict], gpu: str, overhead_gb: f
         out["wh_per_1k_ko_chars"] = round(w / cps * 1000 / 3600, 4)
         if measured:
             out["krw_per_1m_ko_chars"] = round(measured["krw_per_hour"] / (cps * 3600) * 1e6, 1)
+    return out
+
+
+def service_day(row: dict, econ: dict, basis: str = "answer") -> dict:
+    """하루 운영 시나리오: 하루 econ.service.ko_chars_per_day 글자를 생성하는 한국어 챗봇을 24시간 켜 둔다.
+
+    basis="answer": 실제 답변 측정값(프롬프트 처리 포함), "bench": llama-bench 생성 속도·전력 (한국어 글자 기준)
+    - 일하는 시간 = 하루 글자 수 / 초당 글자 수, 그 동안의 에너지 = 글자당 에너지 x 글자 수
+    - 나머지 시간은 대기 전력(모델을 올려 둔 채 쉬는 GPU)으로 계산. 24시간에 다 못 하면 GPU를 여러 장으로
+    """
+    import math
+
+    if basis == "answer" and "answer_wh_per_1k_chars" in row:
+        wh_per_char, cps = row["answer_wh_per_1k_chars"] / 1000, row["answer_chars_per_s"]
+    elif "wh_per_1k_ko_chars" in row:
+        wh_per_char, cps = row["wh_per_1k_ko_chars"] / 1000, row["ko_chars_per_s"]
+    else:
+        return {}
+    demand = econ["service"]["ko_chars_per_day"]
+    busy_h = demand / cps / 3600
+    n = max(1, math.ceil(busy_h / 24))
+    active_kwh = wh_per_char * demand / 1000
+    idle_kwh = row["idle_w"] * (24 * n - busy_h) / 1000
+    kwh = active_kwh + idle_kwh
+    out = {"n_gpu": n, "busy_h_per_day": round(busy_h, 2), "kwh_per_day": round(kwh, 3),
+           "kwh_per_day_active": round(active_kwh, 3), "kwh_per_day_idle": round(idle_kwh, 3),
+           "kwh_per_year": round(kwh * 365, 1), "krw_elec_per_year": round(kwh * 365 * econ["krw_per_kwh"]),
+           "kg_co2_per_year": round(kwh * 365 * econ["kg_co2_per_kwh"], 1), "service_basis": basis}
+    if "gpu_krw_per_hour" in row:
+        out["krw_gpu_rent_per_day"] = round(row["gpu_krw_per_hour"] * 24 * n)
     return out
 
 
