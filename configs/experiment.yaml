@@ -45,7 +45,8 @@ vocab:                            # 02b_extend_vocab.py (CPU) + 04_train_lora.py
   stage1:                         # 새 토큰 임베딩만 학습 (모델은 고정)
     dataset: wikimedia/wikipedia
     file: 20231101.ko/train-00001-of-00003.parquet   # 보정·BPE(0번 파일), 퍼플렉시티(2번 파일)와 다름
-    n_tokens: 20000000            # 시범 학습으로 잰 속도를 보고 정함
+    n_tokens: 20000000            # 최대치. 03 노트북이 시범 학습 속도로 hours 안에 끝나게 줄임
+    hours: 3                      # 1단계에 쓸 시간 (A100 40GB 시간당 약 5.4유닛)
     seq_len: 1024
     batch_size: 4
     grad_accum: 4

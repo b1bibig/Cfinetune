@@ -47,6 +47,15 @@ print(f"GPU 메모리 {mem:.0f}GB")
 assert mem >= {need}, "런타임 > 런타임 유형 변경에서 {gpu} 를 고르세요"'''
 
 
+AUTO_OFF = r'''# 다 끝나면 런타임을 자동으로 끈다 (켜 둔 채 두면 아무것도 안 해도 유닛이 나감). 결과는 이미 드라이브에 있음
+# 끄지 않고 더 볼 게 있으면 아래를 False로
+AUTO_OFF = True
+if AUTO_OFF:
+    push_results()
+    from google.colab import runtime
+    runtime.unassign()'''
+
+
 def md(text):
     return {"cell_type": "markdown", "metadata": {}, "source": text.strip("\n").splitlines(keepends=True)}
 
@@ -121,7 +130,8 @@ push_results()'''),
 !python /content/llama.cpp/convert_hf_to_gguf.py /content/models/baidu__ERNIE-4.5-21B-A3B-PT --outfile /content/gguf/original-BF16.gguf --outtype bf16
 !python scripts/06_bench.py --gguf /content/gguf/original-BF16.gguf --name original-BF16
 push_results()'''),
-    md("끝나면 **런타임 → 런타임 연결 해제 및 삭제**를 눌러 유닛이 계속 나가지 않게 하세요."),
+    md("## 런타임 끄기"),
+    code(AUTO_OFF),
 ], gpu="A100"))
 
 # ------------------------------------------------------------------ 02
@@ -162,10 +172,14 @@ def run_variant(hf_dir, stem, quants):
         g = f"{GGUF}/{stem}-{q}.gguf"
         !python scripts/05_eval.py --gguf {g} --name {stem}-{q}
         !python scripts/06_bench.py --gguf {g} --name {stem}-{q}
-        if stem == "original" and q == cfg["pc"]["copy_original"]:   # 내 PC 측정용 (docs/pc.md)
-            os.makedirs(f"{DRIVE}/gguf", exist_ok=True)
-            shutil.copy(g, f"{DRIVE}/gguf/")
-        os.remove(g)
+        if stem == "original" and q == cfg["pc"]["copy_original"] and os.path.exists(g):   # 내 PC 측정용 (docs/pc.md)
+            try:
+                os.makedirs(f"{DRIVE}/gguf", exist_ok=True)
+                shutil.copy(g, f"{DRIVE}/gguf/")
+            except OSError as e:
+                print("드라이브에 복사 못 함 (공간 부족?):", e)
+        if os.path.exists(g):
+            os.remove(g)
         push_results()'''),
     md("## 기준: 원본"),
     code("run_variant(SRC, \"original\", [REF, DEPLOY])"),
@@ -178,9 +192,11 @@ for v in cfg["pruning"]["variants"]:
         print("건너뜀:", name); continue
     !python scripts/02_prune.py --variant {name} --src {SRC} --out-dir {PRUNED}
     run_variant(f"{PRUNED}/{name}", name, quants)
-    shutil.rmtree(f"{PRUNED}/{name}")'''),
+    shutil.rmtree(f"{PRUNED}/{name}", ignore_errors=True)'''),
     md("## 중간 결과 표"),
     code('!python scripts/07_econ.py\npush_results()'),
+    md("## 런타임 끄기"),
+    code(AUTO_OFF),
 ], gpu="L4"))
 
 # ------------------------------------------------------------------ 03
@@ -219,23 +235,45 @@ print(NAME, "- 평가까지 끝남" if done() else "")'''),
     code(r'''if not done() and not merged() and not os.path.exists(f"{TRAIN_IN}/config.json"):
     SRC = resolve_model_dir(cfg["model"]["id"])
     !python scripts/02_prune.py --variant {base} --src {SRC} --out-dir /content/models/pruned
-    shutil.rmtree(SRC)   # 디스크 확보 (원본은 더 이상 필요 없음)
+    shutil.rmtree(SRC, ignore_errors=True)   # 디스크 확보 (원본은 더 이상 필요 없음)
     if VX:
         !python scripts/02b_extend_vocab.py --src /content/models/pruned/{base} --dst {TRAIN_IN}
-        shutil.rmtree(f"/content/models/pruned/{base}")
+        shutil.rmtree(f"/content/models/pruned/{base}", ignore_errors=True)
     push_results()'''),
     md("""
-## (선택) 시범 학습: 속도와 메모리 재기 (약 10분)
-각 단계를 5스텝만 돌려 `train_samples_per_second`와 최대 VRAM을 봅니다 (1단계는 x1024 하면 초당 토큰).
-이 속도로 `configs/experiment.yaml`의 `vocab.stage1.n_tokens`를 정하세요.
+## 시범 학습: 속도 재고 1단계 학습량 정하기 (약 10분)
+각 단계를 5스텝만 돌려 속도와 최대 VRAM을 잽니다. 1단계(새 토큰 임베딩) 학습량은
+`vocab.stage1.hours`(기본 3시간) 안에 끝나도록 자동으로 정하고, 이어 학습할 때 같은 값을 쓰도록 드라이브에 저장합니다.
 """),
-    code(r'''!nohup nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -lms 1000 > /content/mem.log 2>&1 &
-!python scripts/04_train_lora.py --model {TRAIN_IN} --out /content/pilot --ckpt-dir /content/pilot/ckpt --stage1-tokens 300000 --stage1-max-steps 5 --max-steps 5 --no-merge
-!pkill nvidia-smi; echo "최대 VRAM(MiB):"; sort -n /content/mem.log | tail -1
-shutil.rmtree("/content/pilot", ignore_errors=True)'''),
+    code(r'''import json
+os.makedirs(CKPT, exist_ok=True)
+plan = f"{CKPT}/stage1_tokens.json"
+if os.path.exists(plan):
+    STAGE1_TOKENS = json.load(open(plan))["n_tokens"]
+    print("이전에 정한 1단계 학습량:", f"{STAGE1_TOKENS:,} 토큰")
+elif not done() and not merged():
+    !nohup nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -lms 1000 > /content/mem.log 2>&1 &
+    !python scripts/04_train_lora.py --model {TRAIN_IN} --out /content/pilot --ckpt-dir /content/pilot/ckpt --stage1-tokens 300000 --stage1-max-steps 5 --max-steps 5 --no-merge
+    !pkill nvidia-smi
+    s1 = cfg["vocab"]["stage1"]
+    try:
+        peak = max(float(x) for x in open("/content/mem.log") if x.strip())
+        log = json.load(open("/content/pilot/train_log.json"))
+        tps1 = log["stage1"]["metrics"]["train_samples_per_second"] * s1["seq_len"]   # 1단계 초당 토큰
+        sps2 = log["metrics"]["train_samples_per_second"]                             # 2단계 초당 예제
+        STAGE1_TOKENS = int(min(s1["n_tokens"], tps1 * 3600 * s1["hours"]) // 1_000_000 * 1_000_000) or 1_000_000
+        json.dump({"n_tokens": STAGE1_TOKENS, "stage1_tokens_per_s": tps1, "stage2_examples_per_s": sps2,
+                   "peak_vram_mib": peak}, open(plan, "w"))
+        print(f"최대 VRAM {peak / 1024:.1f} GB / 1단계 초당 {tps1:,.0f} 토큰 -> {STAGE1_TOKENS:,} 토큰 "
+              f"(약 {STAGE1_TOKENS / tps1 / 3600:.1f}시간) / 2단계 약 {cfg['lora']['n_examples'] / sps2 / 3600:.1f}시간")
+    except Exception as e:   # 시범 학습이 실패해도 멈추지 않게 (멈추면 마지막 자동 종료가 안 됨)
+        STAGE1_TOKENS = s1["n_tokens"]
+        print("시범 학습 결과를 읽지 못함 (위 출력 확인):", e, "-> 기본값", STAGE1_TOKENS)
+    shutil.rmtree("/content/pilot", ignore_errors=True)
+    push_results()'''),
     md("## 2. 학습 (1단계 + 2단계, 끊기면 이 셀까지 다시 실행)"),
     code(r'''if not done() and not merged():
-    !python scripts/04_train_lora.py --model {TRAIN_IN} --out {OUT} --ckpt-dir {CKPT}
+    !python scripts/04_train_lora.py --model {TRAIN_IN} --out {OUT} --ckpt-dir {CKPT} --stage1-tokens {STAGE1_TOKENS}
     if merged():
         shutil.copytree(f"{OUT}/adapter", f"{DRIVE}/lora/{NAME}/adapter", dirs_exist_ok=True)
         shutil.rmtree(f"{CKPT}/stage2", ignore_errors=True)   # 드라이브 공간 확보 (1단계 결과는 남김)
@@ -253,9 +291,13 @@ os.makedirs(f"{DRIVE}/gguf", exist_ok=True)
 for q in cfg["lora"]["to_drive"]:   # 04 노트북(작은 GPU)과 내 PC 측정용
     g = f"/content/gguf/{NAME}-{q}.gguf"
     if os.path.exists(g) and not os.path.exists(f"{DRIVE}/gguf/{NAME}-{q}.gguf"):
-        shutil.copy(g, f"{DRIVE}/gguf/")
-        print("드라이브에 저장:", f"{DRIVE}/gguf/{NAME}-{q}.gguf")'''),
-    md("끝나면 **런타임 → 런타임 연결 해제 및 삭제**를 눌러 유닛이 계속 나가지 않게 하세요."),
+        try:
+            shutil.copy(g, f"{DRIVE}/gguf/")
+            print("드라이브에 저장:", f"{DRIVE}/gguf/{NAME}-{q}.gguf")
+        except OSError as e:
+            print("드라이브에 복사 못 함 (공간 부족?):", e)'''),
+    md("## 런타임 끄기"),
+    code(AUTO_OFF),
 ], gpu="A100"))
 
 # ------------------------------------------------------------------ 04
@@ -275,7 +317,8 @@ NAME = f"{cfg['lora']['base_variant']}{'-vx' if cfg['vocab']['enabled'] else ''}
 !cp {DRIVE}/gguf/{NAME}.gguf /content/
 !python scripts/06_bench.py --gguf /content/{NAME}.gguf --name {NAME}
 push_results()'''),
-    md("끝나면 **런타임 → 런타임 연결 해제 및 삭제**를 누르세요."),
+    md("## 런타임 끄기"),
+    code(AUTO_OFF),
 ], gpu="T4"))
 
 # ------------------------------------------------------------------ 05
