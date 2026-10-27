@@ -19,7 +19,8 @@ if not os.path.exists("/content/Cfinetune"):
     !git clone -q -b {BRANCH} {REPO_URL} /content/Cfinetune
 %cd /content/Cfinetune
 !git pull -q
-%pip install -q -r requirements-colab.txt'''
+%pip install -q -r requirements-colab.txt
+%pip uninstall -y -q torchao   # 코랩의 옛 torchao가 있으면 PEFT가 LoRA 합치기·불러오기에서 멈춤 (이 실험은 안 씀)'''
 
 DRIVE = r'''# 구글 드라이브: 결과(results/)를 세션이 끊겨도 남도록 저장
 from google.colab import drive
