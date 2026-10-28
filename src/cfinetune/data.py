@@ -139,7 +139,7 @@ def sft_examples(name: str, n: int, seed: int = 0, offset: int = 0, file: str | 
     같은 seed로 섞은 순서에서 offset부터 가져오므로, 보정용(offset 큼)과 LoRA 학습용(offset 0)이 겹치지 않는다.
     답이 한국어가 아닌 예제는 건너뛴다 (is_korean_answer).
     """
-    ds = load_dataset(name, data_files=file, split="train") if file else load_dataset(name, split="train")
+    ds = load_dataset(name, data_files=file, split="train", verification_mode="no_checks") if file else load_dataset(name, split="train")
     idx = list(range(len(ds)))
     random.Random(seed).shuffle(idx)
     count = 0
