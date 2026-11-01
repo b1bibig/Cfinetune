@@ -233,7 +233,7 @@ def merged():
 
 ADAPTER = f"{DRIVE}/lora/{NAME}/adapter"   # 2단계까지 끝난 어댑터 (있으면 다시 학습하지 않고 합치기만)
 need_gguf = [q for q in cfg["lora"]["to_drive"] if not os.path.exists(f"{DRIVE}/gguf/{NAME}-{q}.gguf")]
-rebuild = done() and bool(need_gguf) and os.path.exists(f"{ADAPTER}/adapter_config.json")
+rebuild = bool(need_gguf) and os.path.exists(f"{ADAPTER}/adapter_config.json")   # 학습은 끝났는데 GGUF가 없음
 import json
 print(NAME, "- 평가까지 끝남" if done() else "", f"- 드라이브에 없는 GGUF {need_gguf}를 어댑터로 다시 만듦" if rebuild else "")'''),
     md("## 1. 칼질 + 어휘 확장 (CPU)"),
