@@ -156,6 +156,7 @@ def main():
     ap.add_argument("--model", required=True, help="프루닝(+어휘 확장)한 체크포인트 폴더")
     ap.add_argument("--out", required=True)
     ap.add_argument("--ckpt-dir", default=None, help="중간 저장 폴더 (기본: {out}/ckpt). 드라이브에 두면 끊겨도 이어서 학습")
+    ap.add_argument("--stage2-ckpt-dir", default=None, help="2단계 중간 저장 폴더 (기본: {ckpt-dir}/stage2). 2단계 저장분은 커서(약 2.7GB) 드라이브에 두면 지운 것도 휴지통에서 용량을 차지한다")
     ap.add_argument("--n-examples", type=int, default=None)
     ap.add_argument("--stage1-tokens", type=int, default=None, help="1단계 학습 토큰 수 (기본: config vocab.stage1.n_tokens)")
     ap.add_argument("--max-steps", type=int, default=-1, help="2단계 스텝 제한 (시범 측정용)")
@@ -196,10 +197,11 @@ def main():
     print(f"2단계 학습 예제 {len(rows)}개 (너무 길어 제외 {dropped}개)")
     model = get_peft_model(model, lora_config(c, model, ids))
     model.print_trainable_parameters()
-    trainer = Trainer(model=model, args=train_args(ckpt / "stage2", c, args.max_steps, args.cpu, c.get("save_steps", 50),
+    ckpt2 = Path(args.stage2_ckpt_dir) if args.stage2_ckpt_dir else ckpt / "stage2"
+    trainer = Trainer(model=model, args=train_args(ckpt2, c, args.max_steps, args.cpu, c.get("save_steps", 50),
                                                    train_sampling_strategy="group_by_length"),
                       train_dataset=rows, data_collator=Collator(tok.pad_token_id))
-    result = run(trainer, ckpt / "stage2")
+    result = run(trainer, ckpt2)
 
     model.save_pretrained(out / "adapter")
     log.update({"train_loss": result.training_loss, "steps": result.global_step, "n_examples": len(rows),

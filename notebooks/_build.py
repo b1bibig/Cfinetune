@@ -286,10 +286,11 @@ elif not done() and not merged():
     code(r'''if rebuild and not merged():
     !python scripts/04_train_lora.py --model {TRAIN_IN} --out {OUT} --ckpt-dir {CKPT} --stage1-tokens {STAGE1_TOKENS} --adapter {ADAPTER}
 elif not done() and not merged():
-    !python scripts/04_train_lora.py --model {TRAIN_IN} --out {OUT} --ckpt-dir {CKPT} --stage1-tokens {STAGE1_TOKENS}
+    # 2단계 중간 저장은 런타임 디스크에 (드라이브에 두면 갈아 끼운 저장분이 휴지통에 쌓여 드라이브가 꽉 참). 끊기면 2단계는 처음부터
+    !python scripts/04_train_lora.py --model {TRAIN_IN} --out {OUT} --ckpt-dir {CKPT} --stage2-ckpt-dir /content/ckpt-stage2 --stage1-tokens {STAGE1_TOKENS}
     if merged():
-        shutil.copytree(f"{OUT}/adapter", f"{DRIVE}/lora/{NAME}/adapter", dirs_exist_ok=True)
-        shutil.rmtree(f"{CKPT}/stage2", ignore_errors=True)   # 드라이브 공간 확보 (1단계 결과는 남김)
+        shutil.copytree(f"{OUT}/adapter", ADAPTER, dirs_exist_ok=True)
+        print("드라이브에 어댑터 저장:", ADAPTER)
     push_results()'''),
     md("## 3. GGUF 변환 + 평가"),
     code(r'''todo = [q for q in QUANTS if not os.path.exists(f"results/eval/{NAME}-{q}.json")]
