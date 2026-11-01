@@ -52,6 +52,7 @@ AUTO_OFF = r'''# 다 끝나면 런타임을 자동으로 끈다 (켜 둔 채 두
 AUTO_OFF = True
 if AUTO_OFF:
     push_results()
+    drive.flush_and_unmount()   # 드라이브 업로드가 끝날 때까지 기다린다 (안 하면 방금 복사한 큰 파일이 사라질 수 있음)
     from google.colab import runtime
     runtime.unassign()'''
 
@@ -230,23 +231,33 @@ def done():
 def merged():
     return os.path.exists(f"{OUT}/merged/config.json")
 
-print(NAME, "- 평가까지 끝남" if done() else "")'''),
+ADAPTER = f"{DRIVE}/lora/{NAME}/adapter"   # 2단계까지 끝난 어댑터 (있으면 다시 학습하지 않고 합치기만)
+need_gguf = [q for q in cfg["lora"]["to_drive"] if not os.path.exists(f"{DRIVE}/gguf/{NAME}-{q}.gguf")]
+rebuild = done() and bool(need_gguf) and os.path.exists(f"{ADAPTER}/adapter_config.json")
+import json
+print(NAME, "- 평가까지 끝남" if done() else "", f"- 드라이브에 없는 GGUF {need_gguf}를 어댑터로 다시 만듦" if rebuild else "")'''),
     md("## 1. 칼질 + 어휘 확장 (CPU)"),
-    code(r'''if not done() and not merged() and not os.path.exists(f"{TRAIN_IN}/config.json"):
+    code(r'''if (not done() or rebuild) and not merged() and not os.path.exists(f"{TRAIN_IN}/config.json"):
     SRC = resolve_model_dir(cfg["model"]["id"])
     !python scripts/02_prune.py --variant {base} --src {SRC} --out-dir /content/models/pruned
     shutil.rmtree(SRC, ignore_errors=True)   # 디스크 확보 (원본은 더 이상 필요 없음)
     if VX:
+        vjson = f"results/vocab/{os.path.basename(TRAIN_IN)}.json"
+        before = json.load(open(vjson)) if os.path.exists(vjson) else None
         !python scripts/02b_extend_vocab.py --src /content/models/pruned/{base} --dst {TRAIN_IN}
         shutil.rmtree(f"/content/models/pruned/{base}", ignore_errors=True)
+        if before is not None:   # 학습해 둔 임베딩은 토큰 번호에 묶여 있으므로, 다시 만든 어휘가 그때와 같아야 한다
+            after = json.load(open(vjson))
+            same = all(before.get(k) == after.get(k) for k in ("first_pieces", "tok_per_char", "sample"))
+            print("어휘가 이전과 같음" if same else "주의: 어휘가 이전과 다름 (저장된 학습 결과가 맞지 않음)")
+            assert same or not rebuild, "어휘가 달라서 저장된 어댑터를 쓸 수 없음"
     push_results()'''),
     md("""
 ## 시범 학습: 속도 재고 1단계 학습량 정하기 (약 10분)
 각 단계를 5스텝만 돌려 속도와 최대 VRAM을 잽니다. 1단계(새 토큰 임베딩) 학습량은
 `vocab.stage1.hours`(기본 3시간) 안에 끝나도록 자동으로 정하고, 이어 학습할 때 같은 값을 쓰도록 드라이브에 저장합니다.
 """),
-    code(r'''import json
-os.makedirs(CKPT, exist_ok=True)
+    code(r'''os.makedirs(CKPT, exist_ok=True)
 plan = f"{CKPT}/stage1_tokens.json"
 if os.path.exists(plan):
     STAGE1_TOKENS = json.load(open(plan))["n_tokens"]
@@ -272,7 +283,9 @@ elif not done() and not merged():
     shutil.rmtree("/content/pilot", ignore_errors=True)
     push_results()'''),
     md("## 2. 학습 (1단계 + 2단계, 끊기면 이 셀까지 다시 실행)"),
-    code(r'''if not done() and not merged():
+    code(r'''if rebuild and not merged():
+    !python scripts/04_train_lora.py --model {TRAIN_IN} --out {OUT} --ckpt-dir {CKPT} --stage1-tokens {STAGE1_TOKENS} --adapter {ADAPTER}
+elif not done() and not merged():
     !python scripts/04_train_lora.py --model {TRAIN_IN} --out {OUT} --ckpt-dir {CKPT} --stage1-tokens {STAGE1_TOKENS}
     if merged():
         shutil.copytree(f"{OUT}/adapter", f"{DRIVE}/lora/{NAME}/adapter", dirs_exist_ok=True)
@@ -280,8 +293,9 @@ elif not done() and not merged():
     push_results()'''),
     md("## 3. GGUF 변환 + 평가"),
     code(r'''todo = [q for q in QUANTS if not os.path.exists(f"results/eval/{NAME}-{q}.json")]
-if todo:
-    QS = " ".join(todo)
+make = [q for q in QUANTS if q in todo or (rebuild and q in need_gguf)]
+if make:
+    QS = " ".join(make)
     !python scripts/03_make_gguf.py --hf-dir {OUT}/merged --name {NAME} --out-dir /content/gguf --quant {QS}
     for q in todo:
         g = f"/content/gguf/{NAME}-{q}.gguf"
@@ -291,11 +305,17 @@ os.makedirs(f"{DRIVE}/gguf", exist_ok=True)
 for q in cfg["lora"]["to_drive"]:   # 04 노트북(작은 GPU)과 내 PC 측정용
     g = f"/content/gguf/{NAME}-{q}.gguf"
     if os.path.exists(g) and not os.path.exists(f"{DRIVE}/gguf/{NAME}-{q}.gguf"):
+        free = shutil.disk_usage(DRIVE).free   # 드라이브 남은 용량 (휴지통도 용량을 차지함)
+        if os.path.getsize(g) > free - 200e6:
+            print(f"드라이브 공간 부족으로 {q} 저장 안 함: 필요 {os.path.getsize(g) / 1e9:.2f}GB, 남음 {free / 1e9:.2f}GB (휴지통 비우기)")
+            continue
         try:
             shutil.copy(g, f"{DRIVE}/gguf/")
             print("드라이브에 저장:", f"{DRIVE}/gguf/{NAME}-{q}.gguf")
         except OSError as e:
-            print("드라이브에 복사 못 함 (공간 부족?):", e)'''),
+            print("드라이브에 복사 못 함 (공간 부족?):", e)
+print("드라이브 gguf:", {f: f"{os.path.getsize(f'{DRIVE}/gguf/{f}') / 1e9:.2f}GB" for f in sorted(os.listdir(f"{DRIVE}/gguf"))})
+# 실제 업로드는 마지막 셀의 drive.flush_and_unmount()가 끝날 때까지 기다린다'''),
     md("## 런타임 끄기"),
     code(AUTO_OFF),
 ], gpu="A100"))

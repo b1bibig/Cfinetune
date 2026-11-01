@@ -161,6 +161,7 @@ def main():
     ap.add_argument("--max-steps", type=int, default=-1, help="2단계 스텝 제한 (시범 측정용)")
     ap.add_argument("--stage1-max-steps", type=int, default=-1, help="1단계 스텝 제한 (시범 측정용)")
     ap.add_argument("--no-merge", action="store_true")
+    ap.add_argument("--adapter", default=None, help="이미 학습한 2단계 어댑터 폴더. 주면 2단계를 학습하지 않고 1단계 결과 + 이 어댑터를 합치기만 한다")
     ap.add_argument("--cpu", action="store_true", help="작은 테스트 모델용")
     args = ap.parse_args()
 
@@ -183,6 +184,12 @@ def main():
             model, log["stage1"] = train_new_embeddings(
                 model, ids, lambda: packed_chunks(s, tok, n_tok, s["seq_len"]), s, ckpt / "stage1",
                 args.stage1_max_steps, args.cpu)
+
+    if args.adapter:
+        model = PeftModel.from_pretrained(model, args.adapter)
+        save_merged(model, args.model, out / "merged")
+        print(f"합친 모델 저장 (어댑터 {args.adapter}): {out / 'merged'}")
+        return
 
     examples = list(sft_examples(c["dataset"], args.n_examples or c["n_examples"], file=c.get("dataset_file")))
     rows, dropped = tokenize_examples(tok, arch_of(model), examples, c["max_len"])
