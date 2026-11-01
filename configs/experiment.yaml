@@ -61,7 +61,7 @@ lora:                             # 04_train_lora.py
   base_variant: ko-k32
   dataset: lemon-mint/smol-koreantalk   # apache-2.0, 최신 AI로 번역한 자연스러운 한국어 대화 (KULLM-v2는 DeepL 번역투)
   dataset_file: data/train-00000-of-00008.parquet   # 8개 중 첫 파일만 (약 5만 7천 개). 앞에서부터 n_examples개 (보정분과 안 겹침)
-  n_examples: 6000
+  n_examples: 20000               # 6000 -> 20000 (11-01, 시범 학습이 빨라서. 방법론 7절 "여유가 있으면")
   max_len: 1024
   epochs: 1
   lr: 2.0e-4
