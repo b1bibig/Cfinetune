@@ -72,7 +72,7 @@ lora:                             # 04_train_lora.py
   grad_accum: 8
   save_steps: 50                  # 중간 저장 간격 (드라이브에 저장해 끊겨도 이어서 학습)
   quant_after: [Q6_K, Q4_K_M, Q3_K_M]   # 합친 뒤 다시 양자화할 형식 (Q3_K_M은 8GB 가정용 GPU에 여유 있게 들어감)
-  to_drive: [Q4_K_M, Q3_K_M]      # 작은 GPU·내 PC에서 측정하려고 드라이브에 복사할 형식
+  to_drive: [Q3_K_M, Q4_K_M]      # 작은 GPU·내 PC에서 측정하려고 드라이브에 복사할 형식. 최종 후보 Q3_K_M 먼저 (드라이브가 모자라도 이건 남게)
 
 eval:                             # 05_eval.py
   kmmlu_per_subject: 20           # 45과목 x 20 = 900문항
