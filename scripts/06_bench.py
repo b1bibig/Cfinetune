@@ -30,6 +30,7 @@ def main():
     ap.add_argument("--reps", type=int, default=10)
     ap.add_argument("--skip-answers", action="store_true")
     ap.add_argument("--ngl", type=int, default=99, help="GPU에 올릴 층 수 (VRAM에 다 안 들어가면 낮춤, 예: 원본을 8GB GPU에서)")
+    ap.add_argument("--eos-token-id", type=int, default=None, help="ERNIE GGUF는 100272 (없으면 답이 안 끝나 n_predict까지 감)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -40,7 +41,9 @@ def main():
         arch = arch_of(AutoConfig.from_pretrained(cfg["model"]["id"]))
         (RESULTS / "cache").mkdir(parents=True, exist_ok=True)
         prompts = [l.strip() for l in (ROOT / "configs" / "gen_prompts.txt").read_text(encoding="utf-8").splitlines() if l.strip()]
-        with LlamaServer(args.bin_dir, args.gguf, ngl=args.ngl, parallel=1, log=RESULTS / "cache" / f"bench-server-{args.name}.log") as srv:
+        extra = ["--override-kv", f"tokenizer.ggml.eos_token_id=int:{args.eos_token_id}"] if args.eos_token_id else []
+        with LlamaServer(args.bin_dir, args.gguf, ngl=args.ngl, parallel=1, log=RESULTS / "cache" / f"bench-server-{args.name}.log",
+                         extra=extra) as srv:
             r["loaded_idle_w"] = idle_power(10)  # 모델을 올려 둔 채 대기
             r["answer"] = answer_energy(srv, arch, prompts)
         a = r["answer"]
