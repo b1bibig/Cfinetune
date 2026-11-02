@@ -74,6 +74,14 @@ lora:                             # 04_train_lora.py
   quant_after: [Q6_K, Q4_K_M, Q3_K_M]   # 합친 뒤 다시 양자화할 형식 (Q3_K_M은 8GB 가정용 GPU에 여유 있게 들어감)
   to_drive: [Q3_K_M, Q4_K_M]      # 작은 GPU·내 PC에서 측정하려고 드라이브에 복사할 형식. 최종 후보 Q3_K_M 먼저 (드라이브가 모자라도 이건 남게)
 
+lingbench:                        # 08_lingbench.py, 06 노트북 (L4): 문법·언어 객관식 + 번역투 최소쌍 + 생성문 말투 통계
+  ernie_eos_token_id: 100272      # ERNIE GGUF는 끝 토큰이 </s>로 적혀 있지만 답을 <|end_of_sentence|>로 끝냄
+  original_quant: Q4_K_M          # 원본은 이 형식으로 만들어 비교
+  pruned_quant: Q3_K_M            # 학습 전 ko-k32도 최종 후보와 같은 형식으로
+  reference:                      # 한국어로 처음부터 만든 모델 (허깅페이스 공식 GGUF). 말투·번역투 기준점
+    - {name: EXAONE-4.0-1.2B-Q4_K_M, repo: LGAI-EXAONE/EXAONE-4.0-1.2B-GGUF, file: EXAONE-4.0-1.2B-Q4_K_M.gguf}   # 0.8GB, 같은 '작은 모델'
+    - {name: EXAONE-4.0-32B-Q4_K_M, repo: LGAI-EXAONE/EXAONE-4.0-32B-GGUF, file: EXAONE-4.0-32B-Q4_K_M.gguf}      # 19GB, 위쪽 기준 (L4에 들어감)
+
 eval:                             # 05_eval.py
   kmmlu_per_subject: 20           # 45과목 x 20 = 900문항
   mmlu_per_subject: 10            # 57과목 x 10 = 570문항 (영어 능력을 얼마나 잃었나 참고용)

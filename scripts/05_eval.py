@@ -63,8 +63,11 @@ def main():
         texts[lang] = txt
         out["tok_per_char"][lang] = tokens_per_char(tok, txt.read_text(encoding="utf-8"))
 
+    # 답 끝 토큰이 GGUF의 끝 토큰(ERNIE는 </s>)과 다르면 llama.cpp가 멈추지 않으므로 바꿔 준다 (생성 예시용)
+    end_id = tok.convert_tokens_to_ids(arch.END)
+    extra = ["--override-kv", f"tokenizer.ggml.eos_token_id=int:{end_id}"] if end_id not in (None, tok.unk_token_id, tok.eos_token_id) else []
     t0 = time.time()
-    with llama.LlamaServer(args.bin_dir, args.gguf, ngl=args.ngl, log=RESULTS / "cache" / f"server-{args.name}.log") as srv:
+    with llama.LlamaServer(args.bin_dir, args.gguf, ngl=args.ngl, log=RESULTS / "cache" / f"server-{args.name}.log", extra=extra) as srv:
         res = llama.score_mcq(srv, tok, arch, items, e["prompt_format"],
                               progress=lambda i, n: print(f"  객관식 {i}/{n}", flush=True))
         out["mcq"] = llama.summarize_mcq(res)

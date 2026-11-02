@@ -43,3 +43,20 @@ python scripts\06_bench.py --bin-dir C:\llama --gguf D:\gguf\original-Q4_K_M.ggu
 
 `results\bench\`에 생긴 `*@NVIDIA_GeForce_RTX_3070.json` 파일들을 드라이브 `cfinetune/results/bench/`에 올린 뒤
 05 노트북(보고서)을 실행하면 표에 함께 나온다.
+
+## 4. 채팅으로 써 보기 / 언어력 벤치
+
+ERNIE 계열 GGUF는 끝 토큰이 `</s>`(2)로 적혀 있는데 모델은 답을 `<|end_of_sentence|>`(100272)로 끝낸다.
+그대로 띄우면 답이 끝나지 않고 다음 차례까지 혼자 이어 쓰므로 끝 토큰을 바꿔서 띄운다.
+
+```
+llama-server -m D:\gguf\ko-k32-vx-lora-Q3_K_M.gguf -ngl 99 -c 8192 -fa on --port 8089 --override-kv tokenizer.ggml.eos_token_id=int:100272 --temp 0.7 --top-p 0.9 --dry-multiplier 0.8
+```
+
+브라우저에서 `http://127.0.0.1:8089`. RTX 3070에서 Q3_K_M 전부 GPU, 생성 약 140토큰/초, VRAM 약 7.3GB(바탕화면 포함).
+
+언어력 벤치(06 노트북과 같은 것, 약 15분):
+
+```
+python scripts\08_lingbench.py --bin-dir C:\llama --gguf D:\gguf\ko-k32-vx-lora-Q3_K_M.gguf --name ko-k32-vx-lora-Q3_K_M --eos-token-id 100272 --ctx-per-slot 2048
+```

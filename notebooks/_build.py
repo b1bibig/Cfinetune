@@ -342,6 +342,78 @@ push_results()'''),
     code(AUTO_OFF),
 ], gpu="T4"))
 
+# ------------------------------------------------------------------ 06
+write("06_lingbench.ipynb", notebook([
+    md("""
+# 06. 한국어 언어력 벤치 (L4, 약 2시간 / 약 3~4유닛)
+점수 하나로 안 보이는 '한국어를 한국어답게 하는가'를 잽니다 (`scripts/08_lingbench.py`, 설명은 `src/cfinetune/lingbench.py`).
+
+| 부분 | 내용 |
+|---|---|
+| 객관식 | KoBALT-700(언어학 24현상, 보기 10개), KoGEM(문법 1524), CLIcK 언어 영역(650) |
+| 번역투 최소쌍 | 같은 뜻의 자연스러운 문장과 번역투 문장 210쌍(15유형). 자연스러운 쪽에 확률을 더 주는 비율 (SLOR) |
+| 생성 통계 | 말투 지시 24개 + K2-Eval 90개에 답하게 하고 번역투 표지 빈도, 반말·존댓말 지시 준수, 반복, 한자 섞임, 끝맺음 |
+
+비교 대상: 최종 모델(드라이브 GGUF), 원본 ERNIE, 학습 전 ko-k32, 한국어 모델 EXAONE 4.0 1.2B·32B.
+끝난 모델은 건너뛰므로 세션이 끊기면 처음부터 다시 실행하세요.
+"""),
+    code(SETUP),
+    code(DRIVE),
+    code(GPU_CHECK.replace("{need}", "20").replace("{gpu}", "L4") + "\n!df -h /content | tail -1"),
+    code("!bash scripts/build_llama_cpp.sh /content/llama.cpp {DRIVE}/cache"),
+    code(r'''from _common import resolve_model_dir, load_config
+cfg = load_config()
+L = cfg["lingbench"]
+GGUF = "/content/gguf"
+os.makedirs(GGUF, exist_ok=True)
+
+def done(name):
+    return os.path.exists(f"results/lingbench/{name}.json")
+
+def bench(g, name, ernie=True):
+    eos = f"--eos-token-id {L['ernie_eos_token_id']}" if ernie else ""
+    !python scripts/08_lingbench.py --gguf {g} --name {name} {eos}
+    push_results()
+    os.remove(g)'''),
+    md("## 최종 모델 (드라이브)"),
+    code(r'''NAME = f"{cfg['lora']['base_variant']}{'-vx' if cfg['vocab']['enabled'] else ''}-lora"
+for q in cfg["lora"]["to_drive"]:
+    if done(f"{NAME}-{q}"):
+        print("건너뜀:", q); continue
+    shutil.copy(f"{DRIVE}/gguf/{NAME}-{q}.gguf", GGUF)
+    bench(f"{GGUF}/{NAME}-{q}.gguf", f"{NAME}-{q}")'''),
+    md("## 한국어 기준 모델 (EXAONE 공식 GGUF)"),
+    code(r'''from huggingface_hub import hf_hub_download
+for r in L["reference"]:
+    if done(r["name"]):
+        print("건너뜀:", r["name"]); continue
+    bench(hf_hub_download(r["repo"], r["file"], local_dir=GGUF), r["name"], ernie=False)'''),
+    md("## 원본 ERNIE와 학습 전 ko-k32 (원본 BF16 약 44GB를 받아 만듦)"),
+    code(r'''OQ, PQ, base = L["original_quant"], L["pruned_quant"], cfg["lora"]["base_variant"]
+if not (done(f"original-{OQ}") and done(f"{base}-{PQ}")):
+    SRC = resolve_model_dir(cfg["model"]["id"])
+    if not done(f"original-{OQ}"):
+        !python scripts/03_make_gguf.py --hf-dir {SRC} --name original --out-dir {GGUF} --quant {OQ}
+        bench(f"{GGUF}/original-{OQ}.gguf", f"original-{OQ}")
+    if not done(f"{base}-{PQ}"):
+        !python scripts/02_prune.py --variant {base} --src {SRC} --out-dir /content/models/pruned
+        !python scripts/03_make_gguf.py --hf-dir /content/models/pruned/{base} --name {base} --out-dir {GGUF} --quant {PQ}
+        shutil.rmtree(f"/content/models/pruned/{base}", ignore_errors=True)
+        bench(f"{GGUF}/{base}-{PQ}.gguf", f"{base}-{PQ}")
+    shutil.rmtree(SRC, ignore_errors=True)'''),
+    md("## 결과 표"),
+    code(r'''import glob, json
+from cfinetune import lingbench as lb
+from IPython.display import Markdown, display
+res = [json.load(open(f)) for f in sorted(glob.glob("results/lingbench/*.json"))]
+md_table = lb.report(res)
+open("results/lingbench/report.md", "w").write(md_table + "\n")
+push_results()
+display(Markdown(md_table))'''),
+    md("## 런타임 끄기"),
+    code(AUTO_OFF),
+], gpu="L4"))
+
 # ------------------------------------------------------------------ 05
 write("05_report.ipynb", notebook([
     md("""

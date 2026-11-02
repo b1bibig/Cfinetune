@@ -18,6 +18,7 @@
 | `notebooks/03_lora.ipynb` | A100 | 한국어 어휘 확장 + 2단계 추가학습 + 평가 |
 | `notebooks/04_small_gpu.ipynb` | T4, L4 | 최종 모델을 작은 GPU에서 속도·전력 측정 |
 | `notebooks/05_report.ipynb` | CPU | 경제성 보고서 |
+| `notebooks/06_lingbench.ipynb` | L4 | 한국어 언어력 벤치: KoBALT·KoGEM·CLIcK 언어 + 번역투 최소쌍 + 말투 통계 (원본·학습 전·최종·EXAONE 비교). 내 PC에서는 `scripts/08_lingbench.py` |
 | (선택) [`docs/agent_colab.md`](docs/agent_colab.md) | — | 브라우저 조작 에이전트에게 01·02 실행을 맡길 때 지침 |
 | (선택) [`docs/pc.md`](docs/pc.md) | 내 PC (예: RTX 3070 8GB) | 가정용 GPU에서 원본 vs 최종 측정 |
 
