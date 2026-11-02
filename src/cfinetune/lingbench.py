@@ -163,12 +163,32 @@ def summarize_mcq(res: list[dict]) -> dict:
 def sentence_logprob(cl: Client, ctx: list[int], ids: list[int]) -> float:
     """ctx 다음에 ids가 나올 로그확률 (정확한 값). 토큰 id 문법으로 그 토큰들만 고르게 하고,
     고른 토큰마다 전체 어휘 소프트맥스 확률(temperature<0)을 받아 더한다. 요청 한 번."""
-    grammar = "root ::= " + " ".join(f"<[{t}]>" for t in ids)
-    r = cl.post("/completion", {"prompt": ctx, "n_predict": len(ids), "temperature": -1, "grammar": grammar,
-                                "n_probs": 1, "return_tokens": True, "cache_prompt": True})
-    if r.get("tokens") != ids:
-        raise RuntimeError(f"강제한 토큰과 다르게 생성됨: {r.get('tokens')} != {ids}")
-    return sum(c["logprob"] for c in r["completion_probabilities"])
+    def forced(prompt, toks):
+        grammar = "root ::= " + " ".join(f"<[{t}]>" for t in toks)
+        r = cl.post("/completion", {"prompt": prompt, "n_predict": len(toks), "temperature": -1, "grammar": grammar,
+                                    "n_probs": 1, "return_tokens": True, "cache_prompt": True})
+        if r.get("tokens") != toks:
+            raise RuntimeError(f"강제한 토큰과 다르게 생성됨: {r.get('tokens')} != {toks}")
+        return sum(c["logprob"] for c in r["completion_probabilities"])
+
+    def one_token(prompt, t):
+        """logit_bias로 t를 고르게 한다 (보고되는 확률은 bias 전 원래 값). 바이트 토큰은 글자가 완성 안 돼
+        서버가 확률을 안 돌려주므로, 그 자리 분포 상위 1000개에서 찾는다 (없으면 1000번째 값 = 상한)."""
+        r = cl.post("/completion", {"prompt": prompt, "n_predict": 1, "temperature": -1, "logit_bias": [[t, 1000]],
+                                    "n_probs": 1000, "return_tokens": True, "cache_prompt": True})
+        probs = r.get("completion_probabilities")
+        if probs:
+            return probs[0]["logprob"]
+        r = cl.post("/completion", {"prompt": prompt, "n_predict": 1, "temperature": -1, "logit_bias": [[ctx[-1], 1000]],
+                                    "n_probs": 1000, "cache_prompt": True})
+        tops = r["completion_probabilities"][0]["top_logprobs"]
+        return next((x["logprob"] for x in tops if x["id"] == t), tops[-1]["logprob"])
+
+    try:
+        return forced(ctx, ids)
+    except requests.HTTPError:
+        # 드문 글자가 바이트 토큰으로 쪼개지면 llama.cpp 문법 검사가 글자 중간에서 깨진다 -> 한 토큰씩
+        return sum(one_token(ctx + ids[:i], t) for i, t in enumerate(ids))
 
 
 def unigram_logprob(cl: Client, corpus: list[str], parallel: int = 4):

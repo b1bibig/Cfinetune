@@ -53,36 +53,42 @@ def main():
         mcq, pairs, prompts = mcq[::max(1, len(mcq) // args.limit)][:args.limit], pairs[:args.limit], prompts[:args.limit]
 
     extra = ["--override-kv", f"tokenizer.ggml.eos_token_id=int:{args.eos_token_id}"] if args.eos_token_id else []
-    out = {"name": args.name, "gguf": args.gguf, "eos_token_id": args.eos_token_id}
+    dst = RESULTS / "lingbench" / f"{args.name}.json"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    out = json.loads(dst.read_text(encoding="utf-8")) if dst.exists() and not args.limit else {}   # 끝난 부분은 건너뜀
+    out.update({"name": args.name, "gguf": args.gguf, "eos_token_id": args.eos_token_id})
+
+    def save():
+        dst.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     log = RESULTS / "cache" / f"server-lingbench-{args.name}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     with LlamaServer(args.bin_dir, args.gguf, port=args.port, ngl=args.ngl, parallel=args.parallel,
                      ctx_per_slot=args.ctx_per_slot, log=log, extra=extra) as srv:
         cl = lb.Client(srv.url)
-        if "mcq" not in args.skip:
+        if "mcq" not in args.skip and "mcq" not in out:
             t0 = time.time()
             res = lb.score_mcq(cl, mcq, args.parallel, progress=lambda i, n: print(f"  객관식 {i}/{n}", flush=True))
             out["mcq"], out["mcq_items"] = lb.summarize_mcq(res), res
             out["mcq_seconds"] = round(time.time() - t0, 1)
             for t, s in out["mcq"].items():
                 print(f"{t}: 정답률 {s['acc']*100:.1f}% (찍기 {s['chance']*100:.1f}%, {s['n']}문항)")
-        if "pairs" not in args.skip:
+            save()
+        if "pairs" not in args.skip and "pairs" not in out:
             corpus = [m["question"] + "\n" + "\n".join(m["choices"]) for m in cached("mcq", lb.load_mcq)]  # 토큰 빈도용 한국어 글
             rows = lb.score_pairs(cl, pairs, corpus, args.parallel)
             out["pairs"], out["pair_items"] = lb.summarize_pairs(rows), rows
             p = out["pairs"]
             print(f"번역투 최소쌍: 자연스러운 쪽 선호 SLOR {p['acc_slor']*100:.1f}% / 문장 전체 {p['acc_sum']*100:.1f}% / "
                   f"글자당 {p['acc_char']*100:.1f}%")
-        if "gen" not in args.skip:
+            save()
+        if "gen" not in args.skip and "gen" not in out:
             t0 = time.time()
             rows = lb.generate(cl, prompts, parallel=args.parallel)
             out["gen"], out["gen_items"] = lb.summarize_gen(rows), rows
             out["gen_seconds"] = round(time.time() - t0, 1)
             print(json.dumps(out["gen"], ensure_ascii=False, indent=1))
 
-    dst = RESULTS / "lingbench" / f"{args.name}.json"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    save()
     print(f"저장: {dst}")
 
 
