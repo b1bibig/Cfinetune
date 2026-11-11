@@ -325,7 +325,7 @@ print("드라이브 gguf:", {f: f"{os.path.getsize(f'{DRIVE}/gguf/{f}') / 1e9:.2
 write("04_small_gpu.ipynb", notebook([
     md("""
 # 04. 최종 모델을 작은 GPU에서 재기 (T4 또는 L4, 약 30분 / 1유닛 이하)
-03에서 드라이브에 저장한 최종 모델(배포 형식 Q4_K_M)의 속도·전력·메모리를 잽니다.
+03에서 드라이브에 저장한 최종 모델(Q3_K_M = 8GB GPU용, Q4_K_M = 배포 형식)의 속도·전력·메모리를 잽니다.
 **T4 런타임에서 한 번, L4 런타임에서 한 번** 실행하면 두 GPU 결과가 모두 남습니다.
 """),
     code(SETUP),
@@ -334,10 +334,13 @@ write("04_small_gpu.ipynb", notebook([
     code("!bash scripts/build_llama_cpp.sh /content/llama.cpp {DRIVE}/cache"),
     code(r'''from _common import load_config
 cfg = load_config()
-NAME = f"{cfg['lora']['base_variant']}{'-vx' if cfg['vocab']['enabled'] else ''}-lora-{cfg['deploy_quant']}"
-!cp {DRIVE}/gguf/{NAME}.gguf /content/
-!python scripts/06_bench.py --gguf /content/{NAME}.gguf --name {NAME}
-push_results()'''),
+STEM = f"{cfg['lora']['base_variant']}{'-vx' if cfg['vocab']['enabled'] else ''}-lora"
+# ERNIE GGUF는 끝 토큰이 </s>(2)로 적혀 있지만 모델은 <|end_of_sentence|>(100272)로 끝낸다. 안 바꾸면 답이 n_predict까지 간다
+for q in ["Q3_K_M", cfg["deploy_quant"]]:
+    NAME = f"{STEM}-{q}"
+    !cp {DRIVE}/gguf/{NAME}.gguf /content/
+    !python scripts/06_bench.py --gguf /content/{NAME}.gguf --name {NAME} --eos-token-id 100272
+    push_results()'''),
     md("## 런타임 끄기"),
     code(AUTO_OFF),
 ], gpu="T4"))
